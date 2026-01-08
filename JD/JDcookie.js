@@ -150,7 +150,7 @@ function submitToAPI(cookie, pt_pin) {
             try {
                 const result = data;
                 
-                if (result.includes("ok,") {
+                if (result.includes("ok,")) {
                     console.log(`✅ API提交成功`);
                     notifyResult(pt_pin, true, "成功");
                 } else {
