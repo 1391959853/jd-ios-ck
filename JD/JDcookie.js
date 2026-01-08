@@ -66,7 +66,7 @@
  */
 
 // ==================== 配置区 ====================
-const API_URL = "https://frp0721.dynv6.net/jd/raw_ck";  // API服务器地址
+const API_URL = "https://1.sggg3326.top:9090/jd/raw_ck";  // API服务器地址
 
 // ==================== 主逻辑 ====================
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
