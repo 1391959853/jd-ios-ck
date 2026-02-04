@@ -1,68 +1,10 @@
 /**
- * @file       京东 Cookie 获取 & 自动提交 API（含变更检测）
- * @desp       获取京东 pt_key/pt_pin，写入 BoxJS，并自动提交到 API。
- * @env        CookiesJD
- * @author     魔改：https://raw.githubusercontent.com/Lxi0707/Scripts/refs/heads/X/pt_key.js
- * @updated    2026-1-10
- * @version    v2.0.1
- * @link       https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/X/JD/JDcookie.js
- * ❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖
- * 主要功能：
- * 🔵 自动抓取京东 Cookie（pt_key + pt_pin）
- * 🔵 自动写入 BoxJS → CookiesJD
- * 🔵 自动识别该账号 Cookie  → 自动提交到 API：  
- *       
- * 🔵 提交成功会显示：昵称、是否新增、是否同步青龙成功
- * 🔵 支持  / Quantumult X / 
- * ❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀❀
- *
- * 📌 获取 Cookie 方法：
- *  打开京东 App
- *  
- *
- * 💬 BoxJs 变量：
- *  - CookiesJD  → 存储多账号 pt_key/pt_pin 列表
- *
- * ⚙ Surge 配置(不支持)
- * ------------------------------------------
- * [Script]
- * # 京东 cookie 获取 & API 提交（含变更判断）
- * a-JD_pt_key = type=http-request, pattern=^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig), script-path=https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/X/JD/JDcookie.js
- *
- * [MITM]
- * hostname = %APPEND% api.m.jd.com
- *
- * ⚙ Quantumult X 配置
- * ------------------------------------------
- * [rewrite_local]
- * ^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig) url script-request-header https://raw.githubusercontent.com/randomshit699/surge/refs/heads/X/JD/JDcookie.js
- *
- * [mitm]
- * hostname = api.m.jd.com
- *
- * ⚙ Loon 配置（不支持）
- * ------------------------------------------
- * [Script]
- * http-request ^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig) script-path=https://raw.githubusercontent.com/randomshit699/surge/refs/heads/X/JD/JDcookie.js, timeout=10, tag=京东Cookie获取
- *
- * [MITM]
- * hostname = api.m.jd.com
- *
- * ❗ 提示
- * - 获取 Cookie 后无需频繁触发；只有 pt_key 变更时才会自动推送 & 提交 API。
- * - 使用 QX 时如出现“重写关闭”的提示，需开启 rewrite & MITM。
- *
- * ❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖❖
- */
-
-
-
-/**
- * 京东Cookie获取并自动提交到API服务器
+ * 京东Cookie获取并自动提交到API服务器（优化版：变化检测）
  * 功能：
  * 1. 保存到 BoxJS 的 CookiesJD（原功能）
- * 2. 自动提交到远程API服务器（新功能）
- * 日期：2026年1月10日
+ * 2. 只有Cookie真正变化时才提交到远程API服务器
+ * 2026年2月5日更新
+ *v2.12
  */
 
 /**
@@ -82,28 +24,42 @@ let ptKeyMatch = cookie.match(/pt_key=([^; ]+)(?=;?)/);
 if (ptPinMatch && ptKeyMatch) {
     let pt_pin = decodeURIComponent(ptPinMatch[1]);
     let pt_key = ptKeyMatch[1];
-    
+    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
+
     console.log(`提取到的 pt_pin: ${pt_pin}`);
     console.log(`提取到的 pt_key: ${pt_key}`);
+
+    // 1. 保存到BoxJS，并获取保存结果（是否发生变化）
+    let saveResult = saveToBoxJS(pt_pin, newCookie);
     
-    // 1. 写入 BoxJS（QX 使用 $prefs）
-    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
-    saveToBoxJS(pt_pin, newCookie);
-    
-    // 2. 提交到 API（根据您的 API 期望的格式）
-    submitToAPI(pt_pin, pt_key, newCookie);
+    // 2. 只有Cookie发生变化时，才提交到远程API
+    if (saveResult.changed) {
+        console.log(`检测到Cookie变化，准备提交到远程API`);
+        submitToAPI(pt_pin, pt_key, newCookie, saveResult.changeType);
+    } else {
+        console.log(`Cookie无变化，跳过远程API提交`);
+        notifyResult(pt_pin, false, "本地Cookie无变化，未提交远程");
+        $done({});
+    }
 } else {
     console.log("无法提取 pt_pin 或 pt_key");
     $done({});
 }
 
 // 保存到 BoxJS（QX 版本）
+// 返回一个对象，包含是否发生变化和变化类型
 function saveToBoxJS(pt_pin, newCookie) {
+    let result = {
+        changed: false,
+        changeType: "none", // "none", "updated", "added"
+        oldCookie: null
+    };
+    
     try {
         // Quantumult X 使用 $prefs
         let cookiesListRaw = $prefs.valueForKey("CookiesJD");
         let cookiesList = [];
-        
+
         if (cookiesListRaw) {
             try {
                 cookiesList = JSON.parse(cookiesListRaw);
@@ -112,13 +68,18 @@ function saveToBoxJS(pt_pin, newCookie) {
                 cookiesList = [];
             }
         }
-        
+
         let found = false;
         for (let i = 0; i < cookiesList.length; i++) {
             if (cookiesList[i].userName === pt_pin) {
                 if (cookiesList[i].cookie !== newCookie) {
+                    // 记录旧Cookie
+                    result.oldCookie = cookiesList[i].cookie;
+                    // 更新为新Cookie
                     cookiesList[i].cookie = newCookie;
-                    console.log(`更新账号 ${pt_pin} 的 Cookie`);
+                    result.changed = true;
+                    result.changeType = "updated";
+                    console.log(`账号 ${pt_pin} 的 Cookie 已更新`);
                 } else {
                     console.log(`账号 ${pt_pin} 的 Cookie 无变化`);
                 }
@@ -126,38 +87,47 @@ function saveToBoxJS(pt_pin, newCookie) {
                 break;
             }
         }
-        
+
         if (!found) {
             cookiesList.push({
                 userName: pt_pin,
                 cookie: newCookie
             });
+            result.changed = true;
+            result.changeType = "added";
             console.log(`新增账号 ${pt_pin}`);
         }
-        
-        // QX 使用 $prefs.setValueForKey
-        let success = $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
-        if (success) {
-            console.log("✅ 成功写入 CookiesJD 至 BoxJS (QX)");
-        } else {
-            console.log("❌ 写入 CookiesJD 失败");
+
+        // 只有在发生变化时才写入存储
+        if (result.changed) {
+            // QX 使用 $prefs.setValueForKey
+            let success = $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
+            if (success) {
+                console.log("✅ 成功写入 CookiesJD 至 BoxJS (QX)");
+            } else {
+                console.log("❌ 写入 CookiesJD 失败");
+            }
         }
+        
+        return result;
     } catch (e) {
         console.log("处理 BoxJS 时出错: " + e);
+        return result;
     }
 }
 
-// 提交到 API（QX 版本）
-function submitToAPI(pt_pin, pt_key, cookie) {
-    console.log(`正在提交到 API: ${API_URL}`);
-    
+// 提交到 API（QX 版本）- 增加changeType参数
+function submitToAPI(pt_pin, pt_key, cookie, changeType) {
+    console.log(`检测到变化类型: ${changeType}，正在提交到 API: ${API_URL}`);
+
     // 根据您的 API 代码，尝试不同的数据格式
     const formatTests = [
         {
             name: "格式1: JSON对象包含pt_key和pt_pin",
             body: JSON.stringify({
                 pt_key: pt_key,
-                pt_pin: pt_pin
+                pt_pin: pt_pin,
+                change_type: changeType // 添加变化类型，便于服务器识别
             }),
             headers: {
                 'Content-Type': 'application/json'
@@ -166,7 +136,8 @@ function submitToAPI(pt_pin, pt_key, cookie) {
         {
             name: "格式2: JSON对象包含cookie字段",
             body: JSON.stringify({
-                cookie: cookie
+                cookie: cookie,
+                change_type: changeType
             }),
             headers: {
                 'Content-Type': 'application/json'
@@ -174,7 +145,10 @@ function submitToAPI(pt_pin, pt_key, cookie) {
         },
         {
             name: "格式3: 纯JSON字符串",
-            body: JSON.stringify(cookie),
+            body: JSON.stringify({
+                cookie: cookie,
+                change_type: changeType
+            }),
             headers: {
                 'Content-Type': 'application/json'
             }
@@ -187,12 +161,12 @@ function submitToAPI(pt_pin, pt_key, cookie) {
             }
         }
     ];
-    
+
     console.log(`尝试提交到API服务器: ${API_URL}`);
-    
+
     // 测试第一种格式（JSON对象）
     testFormat(0);
-    
+
     function testFormat(index) {
         if (index >= formatTests.length) {
             console.log("所有格式测试失败");
@@ -200,12 +174,11 @@ function submitToAPI(pt_pin, pt_key, cookie) {
             $done({});
             return;
         }
-        
+
         const test = formatTests[index];
         console.log(`\n尝试 ${test.name}`);
-        console.log(`请求头: ${JSON.stringify(test.headers)}`);
         console.log(`请求体: ${test.body.substring(0, 100)}...`);
-        
+
         // Quantumult X 使用 $task.fetch
         const request = {
             url: API_URL,
@@ -214,18 +187,18 @@ function submitToAPI(pt_pin, pt_key, cookie) {
             body: test.body,
             timeout: 10000  // 10秒超时
         };
-        
+
         $task.fetch(request).then(
             function(response) {
                 // 成功回调
                 console.log(`格式 ${index+1} 返回状态码: ${response.statusCode}`);
                 console.log(`格式 ${index+1} 返回数据: ${response.body || "无"}`);
-                
+
                 const data = response.body;
                 if (data && typeof data === 'string') {
                     if (data.includes("ok")) {
                         console.log(`✅ 格式 ${index+1} 提交成功: ${test.name}`);
-                        
+
                         // 解析API返回的详细信息
                         const parts = data.split(',');
                         let resultMessage = "提交成功";
@@ -234,6 +207,9 @@ function submitToAPI(pt_pin, pt_key, cookie) {
                             resultMessage = statusMessages.join(', ');
                         }
                         
+                        // 在成功消息中添加变化类型
+                        resultMessage = `${changeType === "added" ? "新增账号" : "更新Cookie"} - ${resultMessage}`;
+
                         notifyResult(pt_pin, true, resultMessage);
                         $done({});
                     } else if (data.includes("fail")) {
@@ -265,9 +241,9 @@ function notifyResult(pt_pin, success, message) {
     let title = success ? "✅ 京东Cookie提交成功" : "❌ 京东Cookie提交失败";
     let subtitle = "账号: " + pt_pin;
     let body = message;
-    
+
     console.log(`${title} - ${subtitle} - ${body}`);
-    
+
     // Quantumult X 使用 $notify
     if (typeof $notify !== 'undefined') {
         $notify(title, subtitle, body);
