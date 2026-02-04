@@ -54,8 +54,8 @@ QQ音乐 开屏广告、播放页广告 <span style="color: #FFD700;">✓</span>
 购物生活类
 
 App名称 去广告效果 状态
-淘宝 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-京东 商品推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>
+淘宝 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>/n
+京东 商品推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>/n
 拼多多 弹窗广告、商品推广 <span style="color: #FFD700;">✓</span>
 美团 开屏广告、推荐广告 <span style="color: #FFD700;">✓</span>
 饿了么 开屏广告、商家推广 <span style="color: #FFD700;">✓</span>
