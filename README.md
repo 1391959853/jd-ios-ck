@@ -7,8 +7,8 @@
 
 1. 打开 **Quantumult X**
 2. 点击右下角「风车」图标
-3. 进入「重写」→「引用」
-4. 添加规则链接：
+3. 进入「配置文件」→「下载配置」
+4. 添加配置文件链接：
 ```
 https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/qx.conf
 ```
