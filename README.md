@@ -1,5 +1,4 @@
 
-```markdown
 # 📱 Quantumult X 国内App去广告规则
 
 本仓库专注于**国内主流App**的去广告规则，针对开屏广告、信息流广告、弹窗广告等进行过滤，提升使用体验。
@@ -12,19 +11,13 @@
 2. 点击右下角「风车」图标
 3. 进入「重写」→「引用」
 4. 添加规则链接：
+```https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/qx.conf
 ```
-
-https://raw.githubusercontent.com/你的用户名/仓库名/main/qx_ad.conf
-
-```
-
----
-
 ## 📊 规则覆盖状态
 
 ### 社交娱乐类
 
-```
+
 ```markdown
 | App名称 | 去广告效果 | 状态 |
 |---------|-----------|------|
