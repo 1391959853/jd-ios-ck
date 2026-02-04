@@ -22,82 +22,74 @@ https://raw.githubusercontent.com/你的用户名/仓库名/main/qx_ad.conf
 社交娱乐类
 
 App名称 去广告效果 状态
-
-微信 朋友圈广告、小程序广告 <span style="color: #FFD700;">✓</span>
-
-微博 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-
-抖音 视频流广告、直播推广 <span style="color: #FFD700;">✓</span>
-
-快手 视频广告、开屏广告 <span style="color: #FFD700;">✓</span>
-
-小红书 信息流广告、推荐广告 <span style="color: #FFD700;">✓</span>
-
-QQ 空间广告、开屏广告 <span style="color: #FFD700;">✓</span>
-
-知乎 回答推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>
-
-豆瓣 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
+微信 朋友圈广告、小程序广告 ✓
+微博 信息流广告、开屏广告 ✓
+抖音 视频流广告、直播推广 ✓
+快手 视频广告、开屏广告 ✓
+小红书 信息流广告、推荐广告 ✓
+QQ 空间广告、开屏广告 ✓
+知乎 回答推荐广告、开屏广告 ✓
+豆瓣 信息流广告、开屏广告 ✓
 
 视频音乐类
 
 App名称 去广告效果 状态
-腾讯视频 片前广告、暂停广告 <span style="color: #FFD700;">✓</span>
-爱奇艺 视频前贴片广告 <span style="color: #FFD700;">✓</span>
-优酷 视频广告、弹窗广告 <span style="color: #FFD700;">✓</span>
-哔哩哔哩 视频前广告、信息流推广 <span style="color: #FFD700;">✓</span>
-网易云音乐 开屏广告、音频广告 <span style="color: #FFD700;">✓</span>
-QQ音乐 开屏广告、播放页广告 <span style="color: #FFD700;">✓</span>
-酷狗音乐 开屏广告、播放页广告 <span style="color: #FFD700;">✓</span>
-芒果TV 视频前广告、弹窗广告 <span style="color: #FFD700;">✓</span>
+腾讯视频 片前广告、暂停广告 ✓
+爱奇艺 视频前贴片广告 ✓
+优酷 视频广告、弹窗广告 ✓
+哔哩哔哩 视频前广告、信息流推广 ✓
+网易云音乐 开屏广告、音频广告 ✓
+QQ音乐 开屏广告、播放页广告 ✓
+酷狗音乐 开屏广告、播放页广告 ✓
+芒果TV 视频前广告、弹窗广告 ✓
 
 购物生活类
 
 App名称 去广告效果 状态
-淘宝 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>/n
-京东 商品推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>/n
-拼多多 弹窗广告、商品推广 <span style="color: #FFD700;">✓</span>
-美团 开屏广告、推荐广告 <span style="color: #FFD700;">✓</span>
-饿了么 开屏广告、商家推广 <span style="color: #FFD700;">✓</span>
-大众点评 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-得物 商品推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>
+淘宝 信息流广告、开屏广告 ✓
+京东 商品推荐广告、开屏广告 ✓
+拼多多 弹窗广告、商品推广 ✓
+美团 开屏广告、推荐广告 ✓
+饿了么 开屏广告、商家推广 ✓
+大众点评 信息流广告、开屏广告 ✓
+得物 商品推荐广告、开屏广告 ✓
 
 资讯阅读类
 
 App名称 去广告效果 状态
-今日头条 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-腾讯新闻 文章内广告、开屏广告 <span style="color: #FFD700;">✓</span>
-网易新闻 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-搜狐新闻 文章广告、开屏广告 <span style="color: #FFD700;">✓</span>
-百度贴吧 帖子广告、开屏广告 <span style="color: #FFD700;">✓</span>
-起点读书 章节间广告、开屏广告 <span style="color: #FFD700;">✓</span>
-番茄小说 阅读页广告、开屏广告 <span style="color: #FFD700;">✓</span>
+今日头条 信息流广告、开屏广告 ✓
+腾讯新闻 文章内广告、开屏广告 ✓
+网易新闻 信息流广告、开屏广告 ✓
+搜狐新闻 文章广告、开屏广告 ✓
+百度贴吧 帖子广告、开屏广告 ✓
+起点读书 章节间广告、开屏广告 ✓
+番茄小说 阅读页广告、开屏广告 ✓
 
 工具出行类
 
 App名称 去广告效果 状态
-高德地图 开屏广告、推荐广告 <span style="color: #FFD700;">✓</span>
-百度地图 开屏广告、导航页广告 <span style="color: #FFD700;">✓</span>
-滴滴出行 开屏广告、推荐广告 <span style="color: #FFD700;">✓</span>
-哈啰出行 开屏广告、活动弹窗 <span style="color: #FFD700;">✓</span>
-铁路12306 开屏广告、推荐广告 <span style="color: #FFD700;">✓</span>
-携程旅行 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
-飞猪旅行 酒店推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>
+高德地图 开屏广告、推荐广告 ✓
+百度地图 开屏广告、导航页广告 ✓
+滴滴出行 开屏广告、推荐广告 ✓
+哈啰出行 开屏广告、活动弹窗 ✓
+铁路12306 开屏广告、推荐广告 ✓
+携程旅行 信息流广告、开屏广告 ✓
+飞猪旅行 酒店推荐广告、开屏广告 ✓
 
 金融支付类
 
 App名称 去广告效果 状态
-支付宝 开屏广告、首页推广 <span style="color: #FFD700;">✓</span>
-微信支付 推广广告、活动弹窗 <span style="color: #FFD700;">✓</span>
-云闪付 开屏广告、首页推广 <span style="color: #FFD700;">✓</span>
-各大银行App 开屏广告、活动推广 <span style="color: #FFD700;">✓</span>
+支付宝 开屏广告、首页推广 ✓
+微信支付 推广广告、活动弹窗 ✓
+云闪付 开屏广告、首页推广 ✓
+各大银行App 开屏广告、活动推广 ✓
 
 ---
 
 📋 状态说明
 
-· <span style="color: #FFD700;">✓</span>：规则有效且定期更新
-· <span style="color: #FF0000;">✗</span>：规则暂时失效（维护中）
+· ✓：规则有效且定期更新
+· ✗：规则暂时失效（维护中）
 
 ---
 
@@ -112,17 +104,9 @@ App名称 去广告效果 状态
 
 🔄 更新日志
 
-· 2025.12.14：更新抖音、快手、哔哩哔哩广告规则 
-
-· 2025.12.26：新增得物、番茄小说广告过滤 
-
-· 2026.1.4：优化腾讯系App去广告规则 
-
-. 2026.1.6: 新增自动抓取京东ck并提交到远程服务器 
-
-. 2026.2.4: 优化京东自动更新脚本。 
-
-. 2026.2.5: 优化番茄小说规则，支持章末广告去除
+· 2024.12.05：更新抖音、快手、哔哩哔哩广告规则
+· 2024.11.28：新增金融支付类App广告过滤
+· 2024.11.20：优化腾讯系App去广告规则
 
 ---
 
