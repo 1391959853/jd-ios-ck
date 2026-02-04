@@ -23,6 +23,7 @@ https://raw.githubusercontent.com/你的用户名/仓库名/main/qx_ad.conf
 ## 📊 规则覆盖状态
 
 ### 社交娱乐类
+
 ```
 ```markdown
 | App名称 | 去广告效果 | 状态 |
