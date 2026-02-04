@@ -22,13 +22,21 @@ https://raw.githubusercontent.com/你的用户名/仓库名/main/qx_ad.conf
 社交娱乐类
 
 App名称 去广告效果 状态
+
 微信 朋友圈广告、小程序广告 <span style="color: #FFD700;">✓</span>
+
 微博 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
+
 抖音 视频流广告、直播推广 <span style="color: #FFD700;">✓</span>
+
 快手 视频广告、开屏广告 <span style="color: #FFD700;">✓</span>
+
 小红书 信息流广告、推荐广告 <span style="color: #FFD700;">✓</span>
+
 QQ 空间广告、开屏广告 <span style="color: #FFD700;">✓</span>
+
 知乎 回答推荐广告、开屏广告 <span style="color: #FFD700;">✓</span>
+
 豆瓣 信息流广告、开屏广告 <span style="color: #FFD700;">✓</span>
 
 视频音乐类
