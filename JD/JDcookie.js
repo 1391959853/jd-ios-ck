@@ -1,131 +1,249 @@
 /**
- * 京东Cookie获取并自动提交到API服务器（修复版：严格变化检测）
- * 功能：
- * 1. 保存到 BoxJS 的 CookiesJD（原功能）
- * 2. 只有Cookie真正变化时才提交到远程API服务器
- * 3. 无论是否有变化都发送QX通知
- * 日期：2026年2月5日（修复版本）
+ * 京东Cookie和wskey获取并自动提交到API服务器
+ * 终极版：使用FIFO队列匹配，不依赖pt_pin
+ * 日期：2024年1月20日
+ * 修改：将pt_key请求域名改为api.m.jd.com并限定functionId，采用队列顺序匹配
  */
 
-/**
- * 京东 Cookie 获取 & 自动提交 API（Quantumult X 专用版）
- * 适配您的 API 服务器
- */
-
-const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";  // 使用 HTTP
+const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 
 // 获取请求头中的 Cookie
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
+let requestUrl = $request.url || '';
+let host = $request.headers['Host'] || '';
 
-// 提取 pt_pin 和 pt_key
+// 获取当前时间戳（秒级）——仅用于清理过期数据，不参与匹配
+let currentTimestamp = Math.floor(Date.now() / 1000);
+let currentTime = new Date().toISOString();
+
+console.log(`请求时间: ${currentTime}`);
+console.log(`时间戳: ${currentTimestamp}`);
+console.log(`Host: ${host}`);
+console.log(`请求URL: ${requestUrl.substring(0, 80)}...`);
+
+// 提取 Cookie 中的信息
 let ptPinMatch = cookie.match(/pt_pin=([^; ]+)(?=;?)/);
 let ptKeyMatch = cookie.match(/pt_key=([^; ]+)(?=;?)/);
+let wskeyMatch = cookie.match(/wskey=([^; ]+)(?=;?)/);
 
-if (ptPinMatch && ptKeyMatch) {
-    let pt_pin = decodeURIComponent(ptPinMatch[1]);
-    let pt_key = ptKeyMatch[1];
-    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
+let pt_pin = ptPinMatch ? decodeURIComponent(ptPinMatch[1]) : '';
+let pt_key = ptKeyMatch ? ptKeyMatch[1] : '';
+let wskey = wskeyMatch ? wskeyMatch[1] : '';
 
-    console.log(`提取到的 pt_pin: ${pt_pin}`);
-    console.log(`提取到的 pt_key: ${pt_key}`);
+// 判断请求类型
+let isWskeyRequest = /sh\.jd\.com/.test(host);
+let isPtKeyRequest = /^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig)/.test(requestUrl);
 
-    // 1. 检查Cookie是否有变化
-    let changeResult = checkCookieChange(pt_pin, newCookie);
-    
-    // 2. 无论是否有变化都保存到BoxJS并发送通知
-    saveToBoxJS(pt_pin, newCookie, changeResult.changeType);
-    
-    // 3. 根据变化结果决定是否提交到API
-    if (changeResult.changed) {
-        console.log(`检测到Cookie变化，类型: ${changeResult.changeType}`);
-        
-        // 提交到远程API
-        submitToAPI(pt_pin, pt_key, newCookie, changeResult.changeType);
-    } else {
-        console.log(`Cookie无变化，跳过远程API提交`);
-        // 发送无变化通知
-        sendNoChangeNotification(pt_pin);
-        $done({});
-    }
+if (isWskeyRequest && wskey) {
+    console.log(`✅ 检测到 wskey 请求`);
+    console.log(`✅ 提取到 wskey: ${wskey.substring(0, 15)}...`);
+    handleWskeyRequest(wskey, currentTimestamp);
+} else if (isPtKeyRequest && pt_pin && pt_key) {
+    console.log(`✅ 检测到 pt_key 请求，pt_pin: ${pt_pin}`);
+    console.log(`✅ 提取到 pt_key: ${pt_key.substring(0, 15)}...`);
+    handlePtKeyRequest(pt_pin, pt_key, currentTimestamp);
 } else {
-    console.log("无法提取 pt_pin 或 pt_key");
+    console.log(`❌ 非目标请求或Cookie不完整，跳过处理`);
     $done({});
 }
 
-// 检查Cookie是否有变化
-function checkCookieChange(pt_pin, newCookie) {
-    let result = {
-        changed: false,
-        changeType: "none" // "none", "updated", "added"
-    };
-    
+// ---------- 队列操作 ----------
+
+// 获取 wskey 队列
+function getWskeyQueue() {
+    let raw = $prefs.valueForKey("JD_Wskey_Queue");
+    return raw ? JSON.parse(raw) : [];
+}
+
+// 保存 wskey 队列
+function saveWskeyQueue(queue) {
+    $prefs.setValueForKey(JSON.stringify(queue), "JD_Wskey_Queue");
+}
+
+// 获取 pt_key 队列
+function getPtKeyQueue() {
+    let raw = $prefs.valueForKey("JD_PtKey_Queue");
+    return raw ? JSON.parse(raw) : [];
+}
+
+// 保存 pt_key 队列
+function savePtKeyQueue(queue) {
+    $prefs.setValueForKey(JSON.stringify(queue), "JD_PtKey_Queue");
+}
+
+// 清理过期数据（超过10秒）
+function cleanExpired(queue, now) {
+    return queue.filter(item => (now - item.timestamp) <= 10);
+}
+
+// 处理 wskey 请求
+function handleWskeyRequest(wskey, timestamp) {
     try {
-        // 获取现有的Cookies列表
-        let cookiesListRaw = $prefs.valueForKey("CookiesJD");
-        if (!cookiesListRaw) {
-            // 如果没有任何存储，说明是新增
-            result.changed = true;
-            result.changeType = "added";
-            console.log("首次使用，检测为新账号");
-            return result;
-        }
+        let queue = getWskeyQueue();
+        // 加入新元素
+        queue.push({ wskey, timestamp });
+        // 清理过期（基于当前时间，时间戳可能不准，但仅用于清理）
+        let now = Math.floor(Date.now() / 1000);
+        queue = cleanExpired(queue, now);
+        saveWskeyQueue(queue);
+        console.log(`✅ wskey 已加入队列，当前队列长度: ${queue.length}`);
         
-        let cookiesList;
-        try {
-            cookiesList = JSON.parse(cookiesListRaw);
-        } catch (e) {
-            console.log("解析 CookiesJD 失败，视为新账号");
-            result.changed = true;
-            result.changeType = "added";
-            return result;
-        }
-        
-        // 查找现有账号
-        for (let i = 0; i < cookiesList.length; i++) {
-            if (cookiesList[i].userName === pt_pin) {
-                // 找到账号，比较Cookie
-                if (cookiesList[i].cookie !== newCookie) {
-                    result.changed = true;
-                    result.changeType = "updated";
-                    console.log(`账号 ${pt_pin} 的 Cookie 有变化`);
-                } else {
-                    console.log(`账号 ${pt_pin} 的 Cookie 无变化`);
-                }
-                return result;
-            }
-        }
-        
-        // 没找到账号，说明是新增
-        result.changed = true;
-        result.changeType = "added";
-        console.log(`新增账号: ${pt_pin}`);
-        return result;
-        
+        // 尝试匹配
+        tryMatch();
     } catch (e) {
-        console.log("检查Cookie变化时出错: " + e);
-        // 出错时保守起见，视为有变化
-        result.changed = true;
-        result.changeType = "updated";
-        return result;
+        console.log("处理 wskey 失败: " + e);
+    }
+    $done({});
+}
+
+// 处理 pt_key 请求
+function handlePtKeyRequest(pt_pin, pt_key, timestamp) {
+    try {
+        let queue = getPtKeyQueue();
+        queue.push({ pt_pin, pt_key, timestamp });
+        let now = Math.floor(Date.now() / 1000);
+        queue = cleanExpired(queue, now);
+        savePtKeyQueue(queue);
+        console.log(`✅ pt_key 已加入队列，当前队列长度: ${queue.length}`);
+        
+        tryMatch();
+    } catch (e) {
+        console.log("处理 pt_key 失败: " + e);
+    }
+    $done({});
+}
+
+// ---------- 匹配与提交 ----------
+
+function tryMatch() {
+    try {
+        let wskeyQueue = getWskeyQueue();
+        let ptkeyQueue = getPtKeyQueue();
+        
+        // 当两个队列都非空时，尝试配对
+        while (wskeyQueue.length > 0 && ptkeyQueue.length > 0) {
+            let wskeyItem = wskeyQueue[0];
+            let ptkeyItem = ptkeyQueue[0];
+            
+            let { wskey } = wskeyItem;
+            let { pt_pin, pt_key } = ptkeyItem;
+            
+            console.log(`🔄 尝试配对: wskey(${wskey.substring(0,15)}...) <-> pt_pin(${pt_pin})`);
+            
+            // 去重检查
+            if (checkIfProcessed(pt_pin, pt_key, wskey)) {
+                console.log(`🔵 该组合已处理过，丢弃队列头部`);
+                // 丢弃两个头部（已处理过的组合不再需要）
+                wskeyQueue.shift();
+                ptkeyQueue.shift();
+                continue;
+            }
+            
+            // 记录已处理
+            recordProcessed(pt_pin, pt_key, wskey);
+            
+            // 组合并提交
+            combineAndSubmit(pt_pin, pt_key, wskey);
+            
+            // 从队列中移除已配对的元素
+            wskeyQueue.shift();
+            ptkeyQueue.shift();
+            
+            // 跳出循环（一次只处理一对，以免阻塞后续可能的不同账号）
+            // 但理论上可以继续循环，这里保留继续处理下一对
+        }
+        
+        // 保存更新后的队列
+        saveWskeyQueue(wskeyQueue);
+        savePtKeyQueue(ptkeyQueue);
+    } catch (e) {
+        console.log("匹配失败: " + e);
     }
 }
 
-// 保存到 BoxJS（QX 版本）- 无论变化都保存
-function saveToBoxJS(pt_pin, newCookie, changeType) {
+// 检查是否已处理过（基于pt_key和wskey的部分哈希）
+function checkIfProcessed(pt_pin, pt_key, wskey) {
     try {
-        // Quantumult X 使用 $prefs
-        let cookiesListRaw = $prefs.valueForKey("CookiesJD");
-        let cookiesList = [];
-
-        if (cookiesListRaw) {
-            try {
-                cookiesList = JSON.parse(cookiesListRaw);
-            } catch (e) {
-                console.log("解析 CookiesJD 失败，重置为空数组");
-                cookiesList = [];
-            }
+        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
+        if (!processedRaw) return false;
+        
+        let processedData = JSON.parse(processedRaw);
+        let key = generateRecordKey(pt_pin, pt_key, wskey);
+        
+        let record = processedData[key];
+        let now = Math.floor(Date.now() / 1000);
+        // 10秒内处理过的视为重复
+        if (record && (now - record.timestamp) < 10) {
+            return true;
         }
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
 
+// 记录已处理的组合
+function recordProcessed(pt_pin, pt_key, wskey) {
+    try {
+        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
+        let processedData = processedRaw ? JSON.parse(processedRaw) : {};
+        
+        let key = generateRecordKey(pt_pin, pt_key, wskey);
+        processedData[key] = {
+            timestamp: Math.floor(Date.now() / 1000),
+            requestTime: new Date().toISOString()
+        };
+        
+        // 保留最近20条
+        let keys = Object.keys(processedData);
+        if (keys.length > 20) {
+            let oldestKey = null;
+            let oldestTime = Infinity;
+            for (let k of keys) {
+                if (processedData[k].timestamp < oldestTime) {
+                    oldestTime = processedData[k].timestamp;
+                    oldestKey = k;
+                }
+            }
+            if (oldestKey) delete processedData[oldestKey];
+        }
+        
+        $prefs.setValueForKey(JSON.stringify(processedData), "JD_Processed_Records");
+    } catch (e) {
+        console.log("记录处理状态失败: " + e);
+    }
+}
+
+// 生成记录键（基于pt_pin和部分key哈希）
+function generateRecordKey(pt_pin, pt_key, wskey) {
+    let hash = 0;
+    let str = pt_key.substring(0, 16) + wskey.substring(0, 16);
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash = hash & hash;
+    }
+    return pt_pin + "_" + hash.toString(36);
+}
+
+// 组合并提交（以下函数与原脚本相同）
+function combineAndSubmit(pt_pin, pt_key, wskey) {
+    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
+    if (wskey) {
+        newCookie += ` wskey=${wskey};`;
+    }
+    
+    console.log(`✅ 成功匹配！组合后的 cookie: ${newCookie.substring(0, 80)}...`);
+    
+    saveToLocalStorage(pt_pin, newCookie);
+    submitToAPI(pt_pin, pt_key, wskey, newCookie);
+    sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey");
+}
+
+function saveToLocalStorage(pt_pin, newCookie) {
+    try {
+        let cookiesListRaw = $prefs.valueForKey("CookiesJD");
+        let cookiesList = cookiesListRaw ? JSON.parse(cookiesListRaw) : [];
+        
         let found = false;
         for (let i = 0; i < cookiesList.length; i++) {
             if (cookiesList[i].userName === pt_pin) {
@@ -135,172 +253,59 @@ function saveToBoxJS(pt_pin, newCookie, changeType) {
                 break;
             }
         }
-
+        
         if (!found) {
-            cookiesList.push({
-                userName: pt_pin,
-                cookie: newCookie
-            });
+            cookiesList.push({ userName: pt_pin, cookie: newCookie });
             console.log(`新增账号 ${pt_pin}`);
         }
-
-        // QX 使用 $prefs.setValueForKey
-        let success = $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
-        if (success) {
-            console.log(`✅ 成功保存 Cookie 至 BoxJS (${changeType})`);
-            return true;
-        } else {
-            console.log("❌ 写入 CookiesJD 失败");
-            return false;
-        }
+        
+        $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
+        console.log(`✅ 成功保存 Cookie 至本地存储`);
     } catch (e) {
-        console.log("保存到 BoxJS 时出错: " + e);
-        return false;
+        console.log("保存到本地存储时出错: " + e);
     }
 }
 
-// 提交到 API（QX 版本）
-function submitToAPI(pt_pin, pt_key, cookie, changeType) {
-    console.log(`正在提交到 API: ${API_URL} (${changeType})`);
+function sendLocalNotification(title, subtitle, message) {
+    let fullTitle = `🔵 ${title}`;
+    console.log(`${fullTitle} - ${subtitle} - ${message}`);
+    if (typeof $notify !== 'undefined') {
+        $notify(fullTitle, subtitle, message);
+    }
+}
 
-    // 根据您的 API 代码，尝试不同的数据格式
-    const formatTests = [
-        {
-            name: "格式1: JSON对象包含pt_key和pt_pin",
-            body: JSON.stringify({
-                pt_key: pt_key,
-                pt_pin: pt_pin,
-                change_type: changeType // 添加变化类型，便于服务器识别
-            }),
-            headers: {
-                'Content-Type': 'application/json'
+function submitToAPI(pt_pin, pt_key, wskey, cookie) {
+    console.log(`正在提交到 API: ${API_URL}`);
+    
+    const request = {
+        url: API_URL,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pt_key, pt_pin, wskey: wskey || '', cookie }),
+        timeout: 10000
+    };
+    
+    $task.fetch(request).then(
+        function(response) {
+            console.log(`API返回状态码: ${response.statusCode}`);
+            let data = response.body || "";
+            console.log(`API返回数据: ${data}`);
+            
+            if (data.includes("ok")) {
+                console.log(`✅ Cookie提交成功`);
+                let parts = data.split(',');
+                let resultMessage = parts.length > 1 ? parts.slice(1).join(', ') : "提交成功";
+                sendLocalNotification("API提交成功", `账号: ${pt_pin}`, resultMessage);
+            } else {
+                console.log(`❌ API返回失败: ${data}`);
+                sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
             }
-        },
-        {
-            name: "格式2: JSON对象包含cookie字段",
-            body: JSON.stringify({
-                cookie: cookie,
-                change_type: changeType
-            }),
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        },
-        {
-            name: "格式3: 纯JSON字符串",
-            body: JSON.stringify({
-                cookie: cookie,
-                change_type: changeType
-            }),
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        },
-        {
-            name: "格式4: 纯文本格式",
-            body: cookie,
-            headers: {
-                'Content-Type': 'text/plain'
-            }
-        }
-    ];
-
-    // 测试第一种格式（JSON对象）
-    testFormat(0);
-
-    function testFormat(index) {
-        if (index >= formatTests.length) {
-            console.log("所有格式测试失败");
-            notifyResult(pt_pin, false, "所有格式测试失败", changeType);
             $done({});
-            return;
+        },
+        function(reason) {
+            console.log(`API提交失败: ${reason.error || reason}`);
+            sendLocalNotification("API提交失败", `账号: ${pt_pin}`, reason.error || "网络错误");
+            $done({});
         }
-
-        const test = formatTests[index];
-        console.log(`\n尝试 ${test.name}`);
-
-        // Quantumult X 使用 $task.fetch
-        const request = {
-            url: API_URL,
-            method: 'POST',
-            headers: test.headers,
-            body: test.body,
-            timeout: 10000  // 10秒超时
-        };
-
-        $task.fetch(request).then(
-            function(response) {
-                // 成功回调
-                console.log(`格式 ${index+1} 返回状态码: ${response.statusCode}`);
-                console.log(`格式 ${index+1} 返回数据: ${response.body || "无"}`);
-
-                const data = response.body;
-                if (data && typeof data === 'string') {
-                    if (data.includes("ok")) {
-                        console.log(`✅ 格式 ${index+1} 提交成功: ${test.name}`);
-
-                        // 解析API返回的详细信息
-                        const parts = data.split(',');
-                        let resultMessage = "提交成功";
-                        if (parts.length > 1) {
-                            const statusMessages = parts.slice(1); // 去掉开头的 "ok"
-                            resultMessage = statusMessages.join(', ');
-                        }
-                        
-                        // 在成功消息中添加变化类型
-                        const changeText = changeType === "added" ? "新增账号" : "更新Cookie";
-                        resultMessage = `${changeText} - ${resultMessage}`;
-
-                        notifyResult(pt_pin, true, resultMessage, changeType);
-                        $done({});
-                    } else if (data.includes("fail")) {
-                        console.log(`❌ 格式 ${index+1} 被拒绝: ${data}`);
-                        // 尝试下一种格式
-                        testFormat(index + 1);
-                    } else {
-                        // 未知返回，也尝试下一种格式
-                        console.log(`⚠️ 格式 ${index+1} 返回未知: ${data}`);
-                        testFormat(index + 1);
-                    }
-                } else {
-                    console.log(`⚠️ 格式 ${index+1} 无返回数据或返回非字符串`);
-                    testFormat(index + 1);
-                }
-            },
-            function(reason) {
-                // 失败回调
-                console.log(`格式 ${index+1} 提交失败: ${reason.error || reason}`);
-                // 尝试下一种格式
-                testFormat(index + 1);
-            }
-        );
-    }
-}
-
-// 发送无变化通知（QX 版本）
-function sendNoChangeNotification(pt_pin) {
-    let title = "🔵 京东Cookie无变化";
-    let subtitle = "账号: " + pt_pin;
-    let body = "本地Cookie与上次相同，未提交到远程服务器";
-
-    console.log(`${title} - ${subtitle} - ${body}`);
-
-    // Quantumult X 使用 $notify
-    if (typeof $notify !== 'undefined') {
-        $notify(title, subtitle, body);
-    }
-}
-
-// 发送变化结果通知（QX 版本）- 只在提交到API时调用
-function notifyResult(pt_pin, success, message, changeType) {
-    let title = success ? "✅ 京东Cookie提交成功" : "❌ 京东Cookie提交失败";
-    let subtitle = "账号: " + pt_pin;
-    let body = message;
-
-    console.log(`${title} - ${subtitle} - ${body}`);
-
-    // Quantumult X 使用 $notify
-    if (typeof $notify !== 'undefined') {
-        $notify(title, subtitle, body);
-    }
+    );
 }
