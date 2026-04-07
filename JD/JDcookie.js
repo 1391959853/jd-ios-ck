@@ -5,7 +5,7 @@
  * 修改：将pt_key请求域名改为api.m.jd.com并限定functionId，采用队列顺序匹配
  */
 
-const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
+const API_URL = "http://bncr.sggg3326.top:9090/jd/raw_ck";
 
 // 获取请求头中的 Cookie
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
@@ -236,7 +236,7 @@ function combineAndSubmit(pt_pin, pt_key, wskey) {
     
     saveToLocalStorage(pt_pin, newCookie);
     submitToAPI(pt_pin, pt_key, wskey, newCookie);
-    sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey");
+    sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey，用数据流量抓取成功率更高！！！");
 }
 
 function saveToLocalStorage(pt_pin, newCookie) {
@@ -292,7 +292,7 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
             console.log(`API返回数据: ${data}`);
             
             if (data.includes("ok")) {
-                console.log(`✅ Cookie提交成功`);
+                console.log(`✅ Cookie提交成功,建议用数据流量抓取`);
                 let parts = data.split(',');
                 let resultMessage = parts.length > 1 ? parts.slice(1).join(', ') : "提交成功";
                 sendLocalNotification("API提交成功", `账号: ${pt_pin}`, resultMessage);
