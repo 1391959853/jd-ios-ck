@@ -5,7 +5,7 @@
  * 修改：将pt_key请求域名改为api.m.jd.com并限定functionId，采用队列顺序匹配
  */
 
-const API_URL = "http://bncr.sggg3326.top:9090/jd/raw_ck";
+const API_URL = "http://bncr.zzj.sggg3326.top/jd/raw_ck";
 
 // 获取请求头中的 Cookie
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
