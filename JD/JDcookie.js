@@ -1,15 +1,14 @@
 /**
  * 京东Cookie和wskey获取并自动提交到API服务器
- * 修正版：等待异步请求完成后再结束脚本
+ * 完整修复版：所有函数已定义，异步完成后才结束脚本
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 
-// 获取请求头中的 Cookie
+// ---------- 获取本次请求信息 ----------
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
 let requestUrl = $request.url || '';
 let host = $request.headers['Host'] || '';
-
 let currentTimestamp = Math.floor(Date.now() / 1000);
 let currentTime = new Date().toISOString();
 
@@ -18,7 +17,7 @@ console.log(`时间戳: ${currentTimestamp}`);
 console.log(`Host: ${host}`);
 console.log(`请求URL: ${requestUrl.substring(0, 80)}...`);
 
-// 提取 Cookie 中的信息
+// 提取 Cookie 字段
 let ptPinMatch = cookie.match(/pt_pin=([^; ]+)(?=;?)/);
 let ptKeyMatch = cookie.match(/pt_key=([^; ]+)(?=;?)/);
 let wskeyMatch = cookie.match(/wskey=([^; ]+)(?=;?)/);
@@ -31,23 +30,21 @@ let wskey = wskeyMatch ? wskeyMatch[1] : '';
 let isWskeyRequest = /sh\.jd\.com/.test(host);
 let isPtKeyRequest = /^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig)/.test(requestUrl);
 
-// 全局标志：是否已经触发了异步提交（避免重复提交）
-let asyncTaskStarted = false;
+// 异步任务计数器
+let pendingAsyncTasks = 0;
 
 if (isWskeyRequest && wskey) {
-    console.log(`✅ 检测到 wskey 请求`);
-    console.log(`✅ 提取到 wskey: ${wskey.substring(0, 15)}...`);
+    console.log(`✅ 检测到 wskey 请求，wskey: ${wskey.substring(0,15)}...`);
     handleWskeyRequest(wskey, currentTimestamp);
 } else if (isPtKeyRequest && pt_pin && pt_key) {
     console.log(`✅ 检测到 pt_key 请求，pt_pin: ${pt_pin}`);
-    console.log(`✅ 提取到 pt_key: ${pt_key.substring(0, 15)}...`);
     handlePtKeyRequest(pt_pin, pt_key, currentTimestamp);
 } else {
     console.log(`❌ 非目标请求或Cookie不完整，跳过处理`);
     $done({});
 }
 
-// ---------- 队列操作（与原脚本相同，省略）----------
+// ---------- 队列操作 ----------
 function getWskeyQueue() {
     let raw = $prefs.valueForKey("JD_Wskey_Queue");
     return raw ? JSON.parse(raw) : [];
@@ -65,11 +62,8 @@ function savePtKeyQueue(queue) {
 function cleanExpired(queue, now) {
     return queue.filter(item => (now - item.timestamp) <= 10);
 }
-// ---------- 队列操作结束 ----------
 
-// 修改：异步标记，防止重复结束
-let pendingAsyncTasks = 0;
-
+// ---------- 处理函数 ----------
 function handleWskeyRequest(wskey, timestamp) {
     try {
         let queue = getWskeyQueue();
@@ -81,10 +75,8 @@ function handleWskeyRequest(wskey, timestamp) {
         tryMatch();
     } catch (e) {
         console.log("处理 wskey 失败: " + e);
-        $done({}); // 出错时立即结束
+        $done({});
     }
-    // 注意：这里不能直接 $done，因为可能触发了异步提交
-    // 如果没有触发异步，需要在最后 $done。我们通过全局计数器管理。
 }
 
 function handlePtKeyRequest(pt_pin, pt_key, timestamp) {
@@ -102,6 +94,7 @@ function handlePtKeyRequest(pt_pin, pt_key, timestamp) {
     }
 }
 
+// ---------- 匹配与提交 ----------
 function tryMatch() {
     try {
         let wskeyQueue = getWskeyQueue();
@@ -115,6 +108,7 @@ function tryMatch() {
             
             console.log(`🔄 尝试配对: wskey(${wskey.substring(0,15)}...) <-> pt_pin(${pt_pin})`);
             
+            // 检查是否刚处理过（10秒内）
             if (checkIfProcessed(pt_pin, pt_key, wskey)) {
                 console.log(`🔵 该组合已处理过，丢弃队列头部`);
                 wskeyQueue.shift();
@@ -122,46 +116,133 @@ function tryMatch() {
                 continue;
             }
             
+            // 记录已处理
             recordProcessed(pt_pin, pt_key, wskey);
+            // 组合并提交（异步）
             combineAndSubmit(pt_pin, pt_key, wskey);
             
+            // 移除已配对的队列头
             wskeyQueue.shift();
             ptkeyQueue.shift();
         }
         
+        // 保存更新后的队列
         saveWskeyQueue(wskeyQueue);
         savePtKeyQueue(ptkeyQueue);
     } catch (e) {
         console.log("匹配失败: " + e);
     }
-    // 注意：如果没有任何配对（队列长度不足），则没有异步任务，需要结束脚本
-    // 我们通过计数器判断
+    // 如果没有启动任何异步任务，直接结束脚本
     if (pendingAsyncTasks === 0) {
         $done({});
     }
 }
 
-// 其他辅助函数（checkIfProcessed, recordProcessed, generateRecordKey, saveToLocalStorage, sendLocalNotification）与原脚本相同，省略...
-// 这里为了完整性列出，但实际使用时请复制原来的函数。
-function checkIfProcessed(pt_pin, pt_key, wskey) { /* ... */ }
-function recordProcessed(pt_pin, pt_key, wskey) { /* ... */ }
-function generateRecordKey(pt_pin, pt_key, wskey) { /* ... */ }
-function saveToLocalStorage(pt_pin, newCookie) { /* ... */ }
-function sendLocalNotification(title, subtitle, message) { /* ... */ }
+// ---------- 去重与记录 ----------
+function checkIfProcessed(pt_pin, pt_key, wskey) {
+    try {
+        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
+        if (!processedRaw) return false;
+        let processedData = JSON.parse(processedRaw);
+        let key = generateRecordKey(pt_pin, pt_key, wskey);
+        let record = processedData[key];
+        let now = Math.floor(Date.now() / 1000);
+        // 10秒内处理过的视为重复
+        return record && (now - record.timestamp) < 10;
+    } catch (e) {
+        return false;
+    }
+}
 
+function recordProcessed(pt_pin, pt_key, wskey) {
+    try {
+        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
+        let processedData = processedRaw ? JSON.parse(processedRaw) : {};
+        let key = generateRecordKey(pt_pin, pt_key, wskey);
+        processedData[key] = {
+            timestamp: Math.floor(Date.now() / 1000),
+            requestTime: new Date().toISOString()
+        };
+        // 保留最近20条记录
+        let keys = Object.keys(processedData);
+        if (keys.length > 20) {
+            let oldestKey = null;
+            let oldestTime = Infinity;
+            for (let k of keys) {
+                if (processedData[k].timestamp < oldestTime) {
+                    oldestTime = processedData[k].timestamp;
+                    oldestKey = k;
+                }
+            }
+            if (oldestKey) delete processedData[oldestKey];
+        }
+        $prefs.setValueForKey(JSON.stringify(processedData), "JD_Processed_Records");
+    } catch (e) {
+        console.log("记录处理状态失败: " + e);
+    }
+}
+
+function generateRecordKey(pt_pin, pt_key, wskey) {
+    let hash = 0;
+    let str = pt_key.substring(0, 16) + wskey.substring(0, 16);
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) - hash) + str.charCodeAt(i);
+        hash = hash & hash;
+    }
+    return pt_pin + "_" + hash.toString(36);
+}
+
+// ---------- 本地存储 ----------
+function saveToLocalStorage(pt_pin, newCookie) {
+    try {
+        let cookiesListRaw = $prefs.valueForKey("CookiesJD");
+        let cookiesList = cookiesListRaw ? JSON.parse(cookiesListRaw) : [];
+        let found = false;
+        for (let i = 0; i < cookiesList.length; i++) {
+            if (cookiesList[i].userName === pt_pin) {
+                cookiesList[i].cookie = newCookie;
+                found = true;
+                console.log(`更新账号 ${pt_pin} 的 Cookie`);
+                break;
+            }
+        }
+        if (!found) {
+            cookiesList.push({ userName: pt_pin, cookie: newCookie });
+            console.log(`新增账号 ${pt_pin}`);
+        }
+        $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
+        console.log(`✅ 成功保存 Cookie 至本地存储`);
+    } catch (e) {
+        console.log("保存到本地存储时出错: " + e);
+    }
+}
+
+// ---------- 通知 ----------
+function sendLocalNotification(title, subtitle, message) {
+    let fullTitle = `🔵 ${title}`;
+    console.log(`${fullTitle} - ${subtitle} - ${message}`);
+    if (typeof $notify !== 'undefined') {
+        $notify(fullTitle, subtitle, message);
+    }
+}
+
+// ---------- 组合并提交 ----------
 function combineAndSubmit(pt_pin, pt_key, wskey) {
     let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
     if (wskey) {
         newCookie += ` wskey=${wskey};`;
     }
     console.log(`✅ 成功匹配！组合后的 cookie: ${newCookie.substring(0, 80)}...`);
+    
     saveToLocalStorage(pt_pin, newCookie);
-    // 标记异步任务开始
+    
+    // 增加异步任务计数
     pendingAsyncTasks++;
     submitToAPI(pt_pin, pt_key, wskey, newCookie);
     sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey，用数据流量抓取成功率更高！！！");
 }
 
+// ---------- API 提交（异步，完成后减少计数器） ----------
 function submitToAPI(pt_pin, pt_key, wskey, cookie) {
     console.log(`正在提交到 API: ${API_URL}`);
     const request = {
@@ -184,7 +265,7 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
                 console.log(`❌ API返回失败: ${data}`);
                 sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
             }
-            // 异步任务完成，减少计数器
+            // 异步任务完成
             pendingAsyncTasks--;
             if (pendingAsyncTasks === 0) {
                 $done({});
