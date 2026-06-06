@@ -1,8 +1,9 @@
 /**
  * 京东Cookie和wskey获取并自动提交到API服务器
  * 终极版：使用FIFO队列匹配，不依赖pt_pin
- * 日期：2024年1月20日
+ * 日期：2026年6月6日
  * 修改：将pt_key请求域名改为api.m.jd.com并限定functionId，采用队列顺序匹配
+ * 2026年6月6日 再次修改：通知中显示完整API返回内容
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
@@ -225,7 +226,7 @@ function generateRecordKey(pt_pin, pt_key, wskey) {
     return pt_pin + "_" + hash.toString(36);
 }
 
-// 组合并提交（以下函数与原脚本相同）
+// 组合并提交
 function combineAndSubmit(pt_pin, pt_key, wskey) {
     let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
     if (wskey) {
@@ -274,6 +275,7 @@ function sendLocalNotification(title, subtitle, message) {
     }
 }
 
+// ================== 修改的核心函数：显示完整返回内容 ==================
 function submitToAPI(pt_pin, pt_key, wskey, cookie) {
     console.log(`正在提交到 API: ${API_URL}`);
     
@@ -289,13 +291,12 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
         function(response) {
             console.log(`API返回状态码: ${response.statusCode}`);
             let data = response.body || "";
-            console.log(`API返回数据: ${data}`);
+            console.log(`API返回完整内容:\n${data}`);
             
             if (data.includes("ok")) {
                 console.log(`✅ Cookie提交成功,建议用数据流量抓取`);
-                let parts = data.split(',');
-                let resultMessage = parts.length > 1 ? parts.slice(1).join(', ') : "提交成功";
-                sendLocalNotification("API提交成功", `账号: ${pt_pin}`, resultMessage);
+                // 修改：通知中显示完整的 API 返回内容（包含IP、地理位置、时间等）
+                sendLocalNotification("API提交成功", `账号: ${pt_pin}`, data);
             } else {
                 console.log(`❌ API返回失败: ${data}`);
                 sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
