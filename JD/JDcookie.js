@@ -2,12 +2,11 @@
  * 京东Cookie和wskey获取并自动提交到API服务器
  * 修改：去除本地Cookie存储，使用 pin_hash ↔ pt_pin 映射配对，映射固定不更新
  * 修复：反向映射必须 pin_hash 非空（防止 undefined 误匹配）
-版本:v9.4（重构版）
+版本:9.4（重构版）
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 
-// ---------- 获取本次请求信息 ----------
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
 let requestUrl = $request.url || '';
 let host = $request.headers['Host'] || '';
@@ -19,7 +18,6 @@ console.log(`时间戳: ${currentTimestamp}`);
 console.log(`Host: ${host}`);
 console.log(`请求URL: ${requestUrl.substring(0, 80)}...`);
 
-// 提取 Cookie 字段
 let ptPinMatch = cookie.match(/pt_pin=([^; ]+)(?=;?)/);
 let ptKeyMatch = cookie.match(/pt_key=([^; ]+)(?=;?)/);
 let wskeyMatch = cookie.match(/wskey=([^; ]+)(?=;?)/);
@@ -30,11 +28,9 @@ let pt_key = ptKeyMatch ? ptKeyMatch[1] : '';
 let wskey = wskeyMatch ? wskeyMatch[1] : '';
 let pin_hash = pinHashMatch ? pinHashMatch[1] : '';
 
-// 判断请求类型
 let isWskeyRequest = /sh\.jd\.com/.test(host);
 let isPtKeyRequest = /^https?:\/\/api\.m\.jd\.com\/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig)/.test(requestUrl);
 
-// 异步任务计数器
 let pendingAsyncTasks = 0;
 
 if (isWskeyRequest && wskey) {
@@ -48,7 +44,6 @@ if (isWskeyRequest && wskey) {
     $done({});
 }
 
-// ---------- 映射持久化（只建立一次，永不更新） ----------
 function getPinMap() {
     let raw = $prefs.valueForKey("JD_PinMap");
     return raw ? JSON.parse(raw) : {};
@@ -57,7 +52,6 @@ function savePinMap(map) {
     $prefs.setValueForKey(JSON.stringify(map), "JD_PinMap");
 }
 
-// 安全建立映射：仅当 pin_hash 和 pt_pin 都未存在于映射表中才写入
 function establishMappingIfAbsent(pin_hash, pt_pin) {
     if (!pin_hash || !pt_pin) return false;
     let pinMap = getPinMap();
@@ -74,7 +68,6 @@ function establishMappingIfAbsent(pin_hash, pt_pin) {
     return true;
 }
 
-// ---------- 队列操作 ----------
 function getWskeyQueue() {
     let raw = $prefs.valueForKey("JD_Wskey_Queue");
     return raw ? JSON.parse(raw) : [];
@@ -93,7 +86,6 @@ function cleanExpired(queue, now) {
     return queue.filter(item => (now - item.timestamp) <= 10);
 }
 
-// ---------- 处理函数 ----------
 function handleWskeyRequest(wskey, pin_hash, timestamp) {
     try {
         let queue = getWskeyQueue();
@@ -124,7 +116,6 @@ function handlePtKeyRequest(pt_pin, pt_key, timestamp) {
     }
 }
 
-// ---------- 匹配与提交 ----------
 function tryMatch() {
     try {
         let wskeyQueue = getWskeyQueue();
@@ -145,15 +136,12 @@ function tryMatch() {
 
             let matched = false;
 
-            // 方式一：正向映射匹配（要求 pin_hash 存在）
             if (pin_hash && pinMap[pin_hash] === pt_pin) {
                 matched = true;
             }
-            // 方式二：反向映射匹配（要求 pin_hash 存在，且 revMap[pt_pin] 不为 undefined）
             else if (pin_hash && pt_pin && revMap[pt_pin] === pin_hash) {
                 matched = true;
             }
-            // 方式三：双方均无映射且时间接近，尝试建立首次映射
             else if (pin_hash && pt_pin && 
                      !pinMap[pin_hash] && !revMap[pt_pin] &&
                      Math.abs(wskeyItem.timestamp - ptkeyItem.timestamp) <= 10) {
@@ -167,7 +155,6 @@ function tryMatch() {
                 break;
             }
 
-            // 去重检查
             if (checkIfProcessed(pt_pin, pt_key, wskey)) {
                 console.log(`🔵 该组合已处理过，丢弃队列头部`);
                 wskeyQueue.shift();
@@ -192,7 +179,6 @@ function tryMatch() {
     }
 }
 
-// ---------- 去重与记录 ----------
 function checkIfProcessed(pt_pin, pt_key, wskey) {
     try {
         let raw = $prefs.valueForKey("JD_Processed_Records");
@@ -231,7 +217,6 @@ function generateRecordKey(pt_pin, pt_key, wskey) {
     return pt_pin + "_" + hash.toString(36);
 }
 
-// ---------- 通知 ----------
 function sendLocalNotification(title, subtitle, message) {
     console.log(`🔵 ${title} - ${subtitle} - ${message}`);
     if (typeof $notify !== 'undefined') {
@@ -239,7 +224,6 @@ function sendLocalNotification(title, subtitle, message) {
     }
 }
 
-// ---------- 组合并提交（强制三项均非空） ----------
 function combineAndSubmit(pt_pin, pt_key, wskey) {
     if (!pt_pin || !pt_key || !wskey) {
         console.log(`❌ 提交被阻止：pt_pin="${pt_pin}", pt_key="${pt_key}", wskey="${wskey}" 存在空值`);
@@ -255,7 +239,6 @@ function combineAndSubmit(pt_pin, pt_key, wskey) {
     sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey");
 }
 
-// ---------- API 提交 ----------
 function submitToAPI(pt_pin, pt_key, wskey, cookie) {
     console.log(`正在提交到 API: ${API_URL}`);
     const request = {
@@ -279,13 +262,17 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
                 sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
             }
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) $done({});
+            if (pendingAsyncTasks === 0) {
+                $done({});
+            }
         },
         function(reason) {
             console.log(`API提交失败: ${reason.error || reason}`);
             sendLocalNotification("API提交失败", `账号: ${pt_pin}`, reason.error || "网络错误");
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) $done({});
+            if (pendingAsyncTasks === 0) {
+                $done({});
+            }
         }
     );
 }
