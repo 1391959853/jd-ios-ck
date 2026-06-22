@@ -1,6 +1,8 @@
 /**
  * 京东Cookie和wskey获取并自动提交到API服务器
- * 完整修复版：所有函数已定义，异步完成后才结束脚本
+ * 修改：去除本地Cookie存储，使用 pin_hash ↔ pt_pin 映射配对，映射固定不更新
+ * 修复：反向映射必须 pin_hash 非空（防止 undefined 误匹配）
+版本:v9.4（重构版）
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
@@ -21,10 +23,12 @@ console.log(`请求URL: ${requestUrl.substring(0, 80)}...`);
 let ptPinMatch = cookie.match(/pt_pin=([^; ]+)(?=;?)/);
 let ptKeyMatch = cookie.match(/pt_key=([^; ]+)(?=;?)/);
 let wskeyMatch = cookie.match(/wskey=([^; ]+)(?=;?)/);
+let pinHashMatch = cookie.match(/pin_hash=([^; ]+)(?=;?)/);
 
 let pt_pin = ptPinMatch ? decodeURIComponent(ptPinMatch[1]) : '';
 let pt_key = ptKeyMatch ? ptKeyMatch[1] : '';
 let wskey = wskeyMatch ? wskeyMatch[1] : '';
+let pin_hash = pinHashMatch ? pinHashMatch[1] : '';
 
 // 判断请求类型
 let isWskeyRequest = /sh\.jd\.com/.test(host);
@@ -35,13 +39,39 @@ let pendingAsyncTasks = 0;
 
 if (isWskeyRequest && wskey) {
     console.log(`✅ 检测到 wskey 请求，wskey: ${wskey.substring(0,15)}...`);
-    handleWskeyRequest(wskey, currentTimestamp);
+    handleWskeyRequest(wskey, pin_hash, currentTimestamp);
 } else if (isPtKeyRequest && pt_pin && pt_key) {
     console.log(`✅ 检测到 pt_key 请求，pt_pin: ${pt_pin}`);
     handlePtKeyRequest(pt_pin, pt_key, currentTimestamp);
 } else {
     console.log(`❌ 非目标请求或Cookie不完整，跳过处理`);
     $done({});
+}
+
+// ---------- 映射持久化（只建立一次，永不更新） ----------
+function getPinMap() {
+    let raw = $prefs.valueForKey("JD_PinMap");
+    return raw ? JSON.parse(raw) : {};
+}
+function savePinMap(map) {
+    $prefs.setValueForKey(JSON.stringify(map), "JD_PinMap");
+}
+
+// 安全建立映射：仅当 pin_hash 和 pt_pin 都未存在于映射表中才写入
+function establishMappingIfAbsent(pin_hash, pt_pin) {
+    if (!pin_hash || !pt_pin) return false;
+    let pinMap = getPinMap();
+    let revMap = {};
+    for (let ph in pinMap) {
+        revMap[pinMap[ph]] = ph;
+    }
+    if (pinMap[pin_hash] || revMap[pt_pin]) {
+        return false;
+    }
+    pinMap[pin_hash] = pt_pin;
+    savePinMap(pinMap);
+    console.log(`🔗 首次建立映射: pin_hash(${pin_hash}) -> pt_pin(${pt_pin})，已固化`);
+    return true;
 }
 
 // ---------- 队列操作 ----------
@@ -64,10 +94,10 @@ function cleanExpired(queue, now) {
 }
 
 // ---------- 处理函数 ----------
-function handleWskeyRequest(wskey, timestamp) {
+function handleWskeyRequest(wskey, pin_hash, timestamp) {
     try {
         let queue = getWskeyQueue();
-        queue.push({ wskey, timestamp });
+        queue.push({ wskey, pin_hash, timestamp });
         let now = Math.floor(Date.now() / 1000);
         queue = cleanExpired(queue, now);
         saveWskeyQueue(queue);
@@ -99,40 +129,64 @@ function tryMatch() {
     try {
         let wskeyQueue = getWskeyQueue();
         let ptkeyQueue = getPtKeyQueue();
-        
+        let pinMap = getPinMap();
+        let revMap = {};
+        for (let ph in pinMap) {
+            revMap[pinMap[ph]] = ph;
+        }
+
         while (wskeyQueue.length > 0 && ptkeyQueue.length > 0) {
             let wskeyItem = wskeyQueue[0];
             let ptkeyItem = ptkeyQueue[0];
-            let { wskey } = wskeyItem;
+            let { wskey, pin_hash } = wskeyItem;
             let { pt_pin, pt_key } = ptkeyItem;
-            
-            console.log(`🔄 尝试配对: wskey(${wskey.substring(0,15)}...) <-> pt_pin(${pt_pin})`);
-            
-            // 检查是否刚处理过（10秒内）
+
+            console.log(`🔄 尝试配对: pin_hash:${pin_hash} <-> pt_pin:${pt_pin}`);
+
+            let matched = false;
+
+            // 方式一：正向映射匹配（要求 pin_hash 存在）
+            if (pin_hash && pinMap[pin_hash] === pt_pin) {
+                matched = true;
+            }
+            // 方式二：反向映射匹配（要求 pin_hash 存在，且 revMap[pt_pin] 不为 undefined）
+            else if (pin_hash && pt_pin && revMap[pt_pin] === pin_hash) {
+                matched = true;
+            }
+            // 方式三：双方均无映射且时间接近，尝试建立首次映射
+            else if (pin_hash && pt_pin && 
+                     !pinMap[pin_hash] && !revMap[pt_pin] &&
+                     Math.abs(wskeyItem.timestamp - ptkeyItem.timestamp) <= 10) {
+                if (establishMappingIfAbsent(pin_hash, pt_pin)) {
+                    matched = true;
+                }
+            }
+
+            if (!matched) {
+                console.log(`❌ 配对条件不满足，保留队列`);
+                break;
+            }
+
+            // 去重检查
             if (checkIfProcessed(pt_pin, pt_key, wskey)) {
                 console.log(`🔵 该组合已处理过，丢弃队列头部`);
                 wskeyQueue.shift();
                 ptkeyQueue.shift();
                 continue;
             }
-            
-            // 记录已处理
+
             recordProcessed(pt_pin, pt_key, wskey);
-            // 组合并提交（异步）
             combineAndSubmit(pt_pin, pt_key, wskey);
-            
-            // 移除已配对的队列头
+
             wskeyQueue.shift();
             ptkeyQueue.shift();
         }
-        
-        // 保存更新后的队列
+
         saveWskeyQueue(wskeyQueue);
         savePtKeyQueue(ptkeyQueue);
     } catch (e) {
         console.log("匹配失败: " + e);
     }
-    // 如果没有启动任何异步任务，直接结束脚本
     if (pendingAsyncTasks === 0) {
         $done({});
     }
@@ -141,45 +195,30 @@ function tryMatch() {
 // ---------- 去重与记录 ----------
 function checkIfProcessed(pt_pin, pt_key, wskey) {
     try {
-        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
-        if (!processedRaw) return false;
-        let processedData = JSON.parse(processedRaw);
+        let raw = $prefs.valueForKey("JD_Processed_Records");
+        if (!raw) return false;
+        let data = JSON.parse(raw);
         let key = generateRecordKey(pt_pin, pt_key, wskey);
-        let record = processedData[key];
+        let record = data[key];
         let now = Math.floor(Date.now() / 1000);
-        // 10秒内处理过的视为重复
         return record && (now - record.timestamp) < 10;
-    } catch (e) {
-        return false;
-    }
+    } catch (e) { return false; }
 }
 
 function recordProcessed(pt_pin, pt_key, wskey) {
     try {
-        let processedRaw = $prefs.valueForKey("JD_Processed_Records");
-        let processedData = processedRaw ? JSON.parse(processedRaw) : {};
+        let raw = $prefs.valueForKey("JD_Processed_Records");
+        let data = raw ? JSON.parse(raw) : {};
         let key = generateRecordKey(pt_pin, pt_key, wskey);
-        processedData[key] = {
-            timestamp: Math.floor(Date.now() / 1000),
-            requestTime: new Date().toISOString()
-        };
-        // 保留最近20条记录
-        let keys = Object.keys(processedData);
+        data[key] = { timestamp: Math.floor(Date.now() / 1000), requestTime: new Date().toISOString() };
+        let keys = Object.keys(data);
         if (keys.length > 20) {
-            let oldestKey = null;
-            let oldestTime = Infinity;
-            for (let k of keys) {
-                if (processedData[k].timestamp < oldestTime) {
-                    oldestTime = processedData[k].timestamp;
-                    oldestKey = k;
-                }
-            }
-            if (oldestKey) delete processedData[oldestKey];
+            let oldest = keys[0];
+            for (let k of keys) if (data[k].timestamp < data[oldest].timestamp) oldest = k;
+            delete data[oldest];
         }
-        $prefs.setValueForKey(JSON.stringify(processedData), "JD_Processed_Records");
-    } catch (e) {
-        console.log("记录处理状态失败: " + e);
-    }
+        $prefs.setValueForKey(JSON.stringify(data), "JD_Processed_Records");
+    } catch (e) {}
 }
 
 function generateRecordKey(pt_pin, pt_key, wskey) {
@@ -192,57 +231,31 @@ function generateRecordKey(pt_pin, pt_key, wskey) {
     return pt_pin + "_" + hash.toString(36);
 }
 
-// ---------- 本地存储 ----------
-function saveToLocalStorage(pt_pin, newCookie) {
-    try {
-        let cookiesListRaw = $prefs.valueForKey("CookiesJD");
-        let cookiesList = cookiesListRaw ? JSON.parse(cookiesListRaw) : [];
-        let found = false;
-        for (let i = 0; i < cookiesList.length; i++) {
-            if (cookiesList[i].userName === pt_pin) {
-                cookiesList[i].cookie = newCookie;
-                found = true;
-                console.log(`更新账号 ${pt_pin} 的 Cookie`);
-                break;
-            }
-        }
-        if (!found) {
-            cookiesList.push({ userName: pt_pin, cookie: newCookie });
-            console.log(`新增账号 ${pt_pin}`);
-        }
-        $prefs.setValueForKey(JSON.stringify(cookiesList), "CookiesJD");
-        console.log(`✅ 成功保存 Cookie 至本地存储`);
-    } catch (e) {
-        console.log("保存到本地存储时出错: " + e);
-    }
-}
-
 // ---------- 通知 ----------
 function sendLocalNotification(title, subtitle, message) {
-    let fullTitle = `🔵 ${title}`;
-    console.log(`${fullTitle} - ${subtitle} - ${message}`);
+    console.log(`🔵 ${title} - ${subtitle} - ${message}`);
     if (typeof $notify !== 'undefined') {
-        $notify(fullTitle, subtitle, message);
+        $notify(`🔵 ${title}`, subtitle, message);
     }
 }
 
-// ---------- 组合并提交 ----------
+// ---------- 组合并提交（强制三项均非空） ----------
 function combineAndSubmit(pt_pin, pt_key, wskey) {
-    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
-    if (wskey) {
-        newCookie += ` wskey=${wskey};`;
+    if (!pt_pin || !pt_key || !wskey) {
+        console.log(`❌ 提交被阻止：pt_pin="${pt_pin}", pt_key="${pt_key}", wskey="${wskey}" 存在空值`);
+        return;
     }
+
+    let newCookie = `pt_key=${pt_key};pt_pin=${pt_pin};`;
+    if (wskey) newCookie += ` wskey=${wskey};`;
     console.log(`✅ 成功匹配！组合后的 cookie: ${newCookie.substring(0, 80)}...`);
-    
-    saveToLocalStorage(pt_pin, newCookie);
-    
-    // 增加异步任务计数
+
     pendingAsyncTasks++;
     submitToAPI(pt_pin, pt_key, wskey, newCookie);
-    sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey，用数据流量抓取成功率更高！！！");
+    sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey");
 }
 
-// ---------- API 提交（异步，完成后减少计数器） ----------
+// ---------- API 提交 ----------
 function submitToAPI(pt_pin, pt_key, wskey, cookie) {
     console.log(`正在提交到 API: ${API_URL}`);
     const request = {
@@ -252,7 +265,7 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
         body: JSON.stringify({ pt_key, pt_pin, wskey: wskey || '', cookie }),
         timeout: 10000
     };
-    
+
     $task.fetch(request).then(
         function(response) {
             console.log(`API返回状态码: ${response.statusCode}`);
@@ -265,19 +278,14 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
                 console.log(`❌ API返回失败: ${data}`);
                 sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
             }
-            // 异步任务完成
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) {
-                $done({});
-            }
+            if (pendingAsyncTasks === 0) $done({});
         },
         function(reason) {
             console.log(`API提交失败: ${reason.error || reason}`);
             sendLocalNotification("API提交失败", `账号: ${pt_pin}`, reason.error || "网络错误");
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) {
-                $done({});
-            }
+            if (pendingAsyncTasks === 0) $done({});
         }
     );
 }
