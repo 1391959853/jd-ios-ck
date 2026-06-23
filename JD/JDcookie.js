@@ -2,7 +2,7 @@
  * 京东Cookie和wskey获取并自动提交到API服务器
  * 修改：去除本地Cookie存储，使用 pin_hash ↔ pt_pin 映射配对，映射固定不更新
  * 修复：反向映射必须 pin_hash 非空（防止 undefined 误匹配）
- * 版本:9.5（适配服务端校验失败自动清理绑定）
+ * 版本:9.6（服务端校验状态标记，已验证绑定不可覆盖，未验证可覆盖）
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
@@ -44,6 +44,7 @@ if (isWskeyRequest && wskey) {
     $done({});
 }
 
+// ========== 映射表操作 (格式: { pin_hash: { pt_pin: "xxx", verified: true/false } }) ==========
 function getPinMap() {
     let raw = $prefs.valueForKey("JD_PinMap");
     return raw ? JSON.parse(raw) : {};
@@ -52,22 +53,64 @@ function savePinMap(map) {
     $prefs.setValueForKey(JSON.stringify(map), "JD_PinMap");
 }
 
-function establishMappingIfAbsent(pin_hash, pt_pin) {
-    if (!pin_hash || !pt_pin) return false;
+/**
+ * 根据 pt_pin 查找对应的 pin_hash (从 PinMap 中反向查找)
+ */
+function findPinHashByPin(pt_pin) {
     let pinMap = getPinMap();
-    let revMap = {};
     for (let ph in pinMap) {
-        revMap[pinMap[ph]] = ph;
+        if (pinMap[ph].pt_pin === pt_pin) {
+            return ph;
+        }
     }
-    if (pinMap[pin_hash] || revMap[pt_pin]) {
-        return false;
-    }
-    pinMap[pin_hash] = pt_pin;
-    savePinMap(pinMap);
-    console.log(`🔗 首次建立映射: pin_hash(${pin_hash}) -> pt_pin(${pt_pin})，已固化`);
-    return true;
+    return null;
 }
 
+/**
+ * 建立或更新绑定关系 (仅在未验证时允许覆盖)
+ * @returns {boolean} 是否成功建立 (即映射已存在且有效，或新建成功)
+ */
+function establishOrUpdateMapping(pin_hash, pt_pin) {
+    if (!pin_hash || !pt_pin) return false;
+    let pinMap = getPinMap();
+    let existing = pinMap[pin_hash];
+
+    if (existing) {
+        if (existing.verified) {
+            // 已验证，不可覆盖，直接返回 true (已存在且可信)
+            console.log(`映射已验证，不可覆盖: ${pin_hash} -> ${existing.pt_pin}`);
+            return true;
+        } else {
+            // 未验证，允许覆盖
+            console.log(`覆盖未验证映射: ${pin_hash} -> ${pt_pin} (旧: ${existing.pt_pin})`);
+            pinMap[pin_hash] = { pt_pin: pt_pin, verified: false };
+            savePinMap(pinMap);
+            return true;
+        }
+    } else {
+        // 全新映射
+        console.log(`建立未验证映射: ${pin_hash} -> ${pt_pin}`);
+        pinMap[pin_hash] = { pt_pin: pt_pin, verified: false };
+        savePinMap(pinMap);
+        return true;
+    }
+}
+
+/**
+ * 将指定 pin_hash 对应的映射标记为已验证 (校验通过后调用)
+ */
+function markMappingVerified(pin_hash) {
+    if (!pin_hash) return;
+    let pinMap = getPinMap();
+    let entry = pinMap[pin_hash];
+    if (entry && !entry.verified) {
+        entry.verified = true;
+        savePinMap(pinMap);
+        console.log(`映射已标记为验证通过: ${pin_hash} -> ${entry.pt_pin}`);
+    }
+}
+
+// ========== 队列操作 ==========
 function getWskeyQueue() {
     let raw = $prefs.valueForKey("JD_Wskey_Queue");
     return raw ? JSON.parse(raw) : [];
@@ -121,10 +164,6 @@ function tryMatch() {
         let wskeyQueue = getWskeyQueue();
         let ptkeyQueue = getPtKeyQueue();
         let pinMap = getPinMap();
-        let revMap = {};
-        for (let ph in pinMap) {
-            revMap[pinMap[ph]] = ph;
-        }
 
         while (wskeyQueue.length > 0 && ptkeyQueue.length > 0) {
             let wskeyItem = wskeyQueue[0];
@@ -136,17 +175,28 @@ function tryMatch() {
 
             let matched = false;
 
-            if (pin_hash && pinMap[pin_hash] === pt_pin) {
+            // 优先使用已验证的映射
+            if (pin_hash && pinMap[pin_hash] && pinMap[pin_hash].verified && pinMap[pin_hash].pt_pin === pt_pin) {
                 matched = true;
+                console.log(`使用已验证映射配对: ${pin_hash} -> ${pt_pin}`);
             }
-            else if (pin_hash && pt_pin && revMap[pt_pin] === pin_hash) {
-                matched = true;
-            }
-            else if (pin_hash && pt_pin && 
-                     !pinMap[pin_hash] && !revMap[pt_pin] &&
-                     Math.abs(wskeyItem.timestamp - ptkeyItem.timestamp) <= 10) {
-                if (establishMappingIfAbsent(pin_hash, pt_pin)) {
-                    matched = true;
+            // 其次使用未验证的映射（包括新建）
+            else if (pin_hash && pt_pin) {
+                let existing = pinMap[pin_hash];
+                if (existing && existing.verified) {
+                    // 已验证但 pt_pin 不匹配，不配对
+                    console.log(`已验证映射与当前 pt_pin 不一致，跳过`);
+                } else {
+                    // 未验证或不存在，尝试建立/覆盖
+                    if (establishOrUpdateMapping(pin_hash, pt_pin)) {
+                        // 检查时间戳差值是否在10秒内（仅未验证时要求）
+                        if (Math.abs(wskeyItem.timestamp - ptkeyItem.timestamp) <= 10) {
+                            matched = true;
+                            console.log(`时间差满足，配对成功`);
+                        } else {
+                            console.log(`时间差不满足，配对失败`);
+                        }
+                    }
                 }
             }
 
@@ -163,7 +213,7 @@ function tryMatch() {
             }
 
             recordProcessed(pt_pin, pt_key, wskey);
-            combineAndSubmit(pt_pin, pt_key, wskey);
+            combineAndSubmit(pt_pin, pt_key, wskey, pin_hash);
 
             wskeyQueue.shift();
             ptkeyQueue.shift();
@@ -224,7 +274,7 @@ function sendLocalNotification(title, subtitle, message) {
     }
 }
 
-function combineAndSubmit(pt_pin, pt_key, wskey) {
+function combineAndSubmit(pt_pin, pt_key, wskey, pin_hash) {
     if (!pt_pin || !pt_key || !wskey) {
         console.log(`❌ 提交被阻止：pt_pin="${pt_pin}", pt_key="${pt_key}", wskey="${wskey}" 存在空值`);
         return;
@@ -234,12 +284,13 @@ function combineAndSubmit(pt_pin, pt_key, wskey) {
     if (wskey) newCookie += ` wskey=${wskey};`;
     console.log(`✅ 成功匹配！组合后的 cookie: ${newCookie.substring(0, 80)}...`);
 
+    // 提交到API（异步），携带 pin_hash 以便回调时标记验证状态
     pendingAsyncTasks++;
-    submitToAPI(pt_pin, pt_key, wskey, newCookie);
+    submitToAPI(pt_pin, pt_key, wskey, newCookie, pin_hash);
     sendLocalNotification("京东Cookie获取成功", `账号: ${pt_pin}`, "已成功获取并提交Cookie和wskey");
 }
 
-function submitToAPI(pt_pin, pt_key, wskey, cookie) {
+function submitToAPI(pt_pin, pt_key, wskey, cookie, pin_hash) {
     console.log(`正在提交到 API: ${API_URL}`);
     const request = {
         url: API_URL,
@@ -257,18 +308,23 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
 
             // 检查是否返回“校验失败，京东账号: xxx”
             if (data.startsWith("校验失败，京东账号: ")) {
-                // 提取 pt_pin
                 let match = data.match(/校验失败，京东账号: (.+)/);
                 let failedPin = match ? match[1].trim() : pt_pin;
-                console.log(`检测到校验失败，账号: ${failedPin}，开始清理绑定关系`);
-                removeBindingByPtPin(failedPin);
+                console.log(`检测到校验失败，账号: ${failedPin}`);
+                // 删除未验证的绑定关系（已验证的不删）
+                removeBindingIfUnverified(failedPin, pin_hash);
                 pendingAsyncTasks--;
-                if (pendingAsyncTasks === 0) {
-                    $done({});
-                }
+                if (pendingAsyncTasks === 0) $done({});
                 return;
             }
 
+            // 校验通过 (服务端返回了同步成功/失败信息，但没有校验失败头)
+            // 标记映射为已验证
+            if (pin_hash) {
+                markMappingVerified(pin_hash);
+            }
+
+            // 原有的通知逻辑
             if (data.includes("ok")) {
                 console.log(`✅ Cookie提交成功`);
                 sendLocalNotification("API提交成功", `账号: ${pt_pin}`, data);
@@ -277,63 +333,56 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
                 sendLocalNotification("API提交失败", `账号: ${pt_pin}`, data);
             }
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) {
-                $done({});
-            }
+            if (pendingAsyncTasks === 0) $done({});
         },
         function(reason) {
             console.log(`API提交失败: ${reason.error || reason}`);
             sendLocalNotification("API提交失败", `账号: ${pt_pin}`, reason.error || "网络错误");
             pendingAsyncTasks--;
-            if (pendingAsyncTasks === 0) {
-                $done({});
-            }
+            if (pendingAsyncTasks === 0) $done({});
         }
     );
 }
 
 /**
- * 根据 pt_pin 删除本地绑定关系以及相关队列项
- * @param {string} pt_pin 京东账号
+ * 仅当绑定关系为“未验证”时才删除，已验证的映射保留。
  */
-function removeBindingByPtPin(pt_pin) {
+function removeBindingIfUnverified(pt_pin, pin_hash) {
     if (!pt_pin) return;
-
-    // 1. 删除映射
     let pinMap = getPinMap();
-    let pin_hash_to_delete = null;
-    for (let ph in pinMap) {
-        if (pinMap[ph] === pt_pin) {
-            pin_hash_to_delete = ph;
-            break;
-        }
-    }
-    if (pin_hash_to_delete) {
-        delete pinMap[pin_hash_to_delete];
-        savePinMap(pinMap);
-        console.log(`已删除映射: pin_hash(${pin_hash_to_delete}) -> ${pt_pin}`);
-    } else {
-        console.log(`未找到 ${pt_pin} 的映射关系，无需删除`);
+    let targetHash = pin_hash || findPinHashByPin(pt_pin);
+    if (!targetHash) {
+        console.log(`未找到 ${pt_pin} 的绑定关系，无需删除`);
+        return;
     }
 
-    // 2. 清理 wskey 队列
+    let entry = pinMap[targetHash];
+    if (entry && entry.verified) {
+        console.log(`绑定已验证，跳过删除: ${targetHash} -> ${entry.pt_pin}`);
+        return;
+    }
+
+    // 删除映射
+    if (entry) {
+        delete pinMap[targetHash];
+        savePinMap(pinMap);
+        console.log(`已删除未验证映射: ${targetHash} -> ${pt_pin}`);
+    }
+
+    // 清理队列
     let wskeyQueue = getWskeyQueue();
     let wskeyLenBefore = wskeyQueue.length;
-    wskeyQueue = wskeyQueue.filter(item => {
-        if (pin_hash_to_delete && item.pin_hash === pin_hash_to_delete) return false;
-        return true;
-    });
+    wskeyQueue = wskeyQueue.filter(item => item.pin_hash !== targetHash);
     if (wskeyQueue.length < wskeyLenBefore) {
         saveWskeyQueue(wskeyQueue);
-        console.log(`已从 wskey 队列中移除 ${pt_pin} 的等待项`);
+        console.log(`已从 wskey 队列中移除 pin_hash: ${targetHash}`);
     }
 
-    // 3. 清理 ptkey 队列
     let ptkeyQueue = getPtKeyQueue();
     let ptkeyLenBefore = ptkeyQueue.length;
     ptkeyQueue = ptkeyQueue.filter(item => item.pt_pin !== pt_pin);
     if (ptkeyQueue.length < ptkeyLenBefore) {
         savePtKeyQueue(ptkeyQueue);
-        console.log(`已从 ptkey 队列中移除 ${pt_pin} 的等待项`);
+        console.log(`已从 ptkey 队列中移除 ${pt_pin}`);
     }
 }
