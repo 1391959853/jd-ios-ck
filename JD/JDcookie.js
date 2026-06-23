@@ -2,7 +2,7 @@
  * 京东Cookie和wskey获取并自动提交到API服务器
  * 修改：去除本地Cookie存储，使用 pin_hash ↔ pt_pin 映射配对，映射固定不更新
  * 修复：反向映射必须 pin_hash 非空（防止 undefined 误匹配）
-版本:9.4（重构版）
+ * 版本:9.5（适配服务端校验失败自动清理绑定）
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
@@ -254,6 +254,21 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
             console.log(`API返回状态码: ${response.statusCode}`);
             let data = response.body || "";
             console.log(`API返回完整内容:\n${data}`);
+
+            // 检查是否返回“校验失败，京东账号: xxx”
+            if (data.startsWith("校验失败，京东账号: ")) {
+                // 提取 pt_pin
+                let match = data.match(/校验失败，京东账号: (.+)/);
+                let failedPin = match ? match[1].trim() : pt_pin;
+                console.log(`检测到校验失败，账号: ${failedPin}，开始清理绑定关系`);
+                removeBindingByPtPin(failedPin);
+                pendingAsyncTasks--;
+                if (pendingAsyncTasks === 0) {
+                    $done({});
+                }
+                return;
+            }
+
             if (data.includes("ok")) {
                 console.log(`✅ Cookie提交成功`);
                 sendLocalNotification("API提交成功", `账号: ${pt_pin}`, data);
@@ -275,4 +290,50 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie) {
             }
         }
     );
+}
+
+/**
+ * 根据 pt_pin 删除本地绑定关系以及相关队列项
+ * @param {string} pt_pin 京东账号
+ */
+function removeBindingByPtPin(pt_pin) {
+    if (!pt_pin) return;
+
+    // 1. 删除映射
+    let pinMap = getPinMap();
+    let pin_hash_to_delete = null;
+    for (let ph in pinMap) {
+        if (pinMap[ph] === pt_pin) {
+            pin_hash_to_delete = ph;
+            break;
+        }
+    }
+    if (pin_hash_to_delete) {
+        delete pinMap[pin_hash_to_delete];
+        savePinMap(pinMap);
+        console.log(`已删除映射: pin_hash(${pin_hash_to_delete}) -> ${pt_pin}`);
+    } else {
+        console.log(`未找到 ${pt_pin} 的映射关系，无需删除`);
+    }
+
+    // 2. 清理 wskey 队列
+    let wskeyQueue = getWskeyQueue();
+    let wskeyLenBefore = wskeyQueue.length;
+    wskeyQueue = wskeyQueue.filter(item => {
+        if (pin_hash_to_delete && item.pin_hash === pin_hash_to_delete) return false;
+        return true;
+    });
+    if (wskeyQueue.length < wskeyLenBefore) {
+        saveWskeyQueue(wskeyQueue);
+        console.log(`已从 wskey 队列中移除 ${pt_pin} 的等待项`);
+    }
+
+    // 3. 清理 ptkey 队列
+    let ptkeyQueue = getPtKeyQueue();
+    let ptkeyLenBefore = ptkeyQueue.length;
+    ptkeyQueue = ptkeyQueue.filter(item => item.pt_pin !== pt_pin);
+    if (ptkeyQueue.length < ptkeyLenBefore) {
+        savePtKeyQueue(ptkeyQueue);
+        console.log(`已从 ptkey 队列中移除 ${pt_pin} 的等待项`);
+    }
 }
