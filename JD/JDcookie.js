@@ -2,7 +2,7 @@
  * 京东Cookie和wskey获取并自动提交到API服务器
  * 修改：去除本地Cookie存储，使用 pin_hash ↔ pt_pin 映射配对，映射固定不更新
  * 修复：反向映射必须 pin_hash 非空（防止 undefined 误匹配）
- * 版本:9.6（服务端校验状态标记，已验证绑定不可覆盖，未验证可覆盖）
+ * 版本:9.7（新增：提交前对 pt_pin 进行 URL 编码）
  */
 
 const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
@@ -296,7 +296,13 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie, pin_hash) {
         url: API_URL,
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pt_key, pt_pin, wskey: wskey || '', cookie }),
+        // ↓↓↓ 修改点：对 pt_pin 进行 URL 编码后再提交 ↓↓↓
+        body: JSON.stringify({ 
+            pt_key, 
+            pt_pin: encodeURIComponent(pt_pin),   // 新增编码
+            wskey: wskey || '', 
+            cookie 
+        }),
         timeout: 10000
     };
 
