@@ -1,73 +1,52 @@
-# 📦 jd-ios-ck
+# Quantumult X 规则自动同步仓库
 
-> **iOS 代理工具及青龙面板的京东辅助脚本合集**
+🎉 **欢迎加入共创！**
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-iOS-blue" alt="Platform">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/QuantumultX-adblock-orange" alt="QuantumultX">
-</p>
-
-
+如果你有更好的规则（包括去广告、分流、重写等），或者发现现有规则有遗漏/错误，**非常欢迎提交 Pull Request 或 Issue**。让我们一起维护这个仓库，让它成为更可靠、更全面的 QX 规则参考。
 
 ---
 
-## 📑 分支说明
+## 📦 项目说明
 
-| 分支 | 用途 | 核心文件 |
-|:----:|------|:--------:|
-| `main` | Quantumult X 去广告规则 | `qx.conf` |
-| `X` | 京东 Cookie 自动化脚本 | `JDcookie.js` / `wskey-update.py` |
+本仓库通过 GitHub Actions 每日自动同步自 **[zqzess/rule_for_quantumultX](https://github.com/zqzess/rule_for_quantumultX)** 的 `QuantumultX` 目录下的三个核心文件夹（`rewrite/`、`rules/`、`snippet/`）。
 
----
+> **关于规则质量**：该源仓库的规则已由本人经过**大量时间实际测试**，尤其针对 **番茄小说（FanQieNovel）** 的去广告、请求拦截及重写规则，已反复验证其有效性与稳定性。因此选择此源作为基础，并持续跟进更新。
 
-## 🚫 去广告规则（main 分支）
-
-### 📌 规则说明
-
-过滤国内主流 App 的以下广告类型：
-
-- 🎬 **开屏广告** — 应用启动时的全屏广告
-- 📋 **弹窗广告** — 使用过程中的弹出广告
-- 📰 **信息流广告** — 内容流中的推广信息
-
-### 📥 安装步骤
-
-```
-1. 打开 Quantumult X
-   └──> 配置文件
-       └──> 下载配置
-
-2. 粘贴以下链接：
-   https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/qx/qx.conf
-
-3. 点击【确定】生效
-```
-
-### 💡 使用建议
-
-> ⚠️ **请定期拉取更新**，以获取最新的广告过滤规则。
-
-如需自定义规则，请在本地配置中追加，避免被更新覆盖。
+同步后，本仓库会自动生成 `/qx/README.md` 文件，清晰列出每个规则文件对应的 App 和规则条数，方便快速查找使用。
 
 ---
 
-## ⚠️ 免责声明
+## 📂 目录结构
+/qx/
+├── rewrite/ # 重写规则（.qxrewrite）
+├── rules/ # 分流/筛选规则（.list）
+├── snippet/ # QX 规则配置片段（.snippet）
+└── README.md # 规则文件详细说明
 
-本项目仅供学习研究使用，请勿用于商业用途。**使用风险自负**。
+---
+
+## 📊 同步状态
+
+*（此区域由脚本自动更新，请勿手动修改）*
+
+- **最后同步时间**：2026-07-28 14:30:00
+- **重写规则**（去重后）：324 条
+- **分流规则**（去重后）：567 条
+- **规则片段**（snippet）：5 个
+- **规则文件总数**：48 个
+
+---
+
+## 🔧 使用方法
+
+1. 将 `/qx/rewrite/` 下的 `.qxrewrite` 文件内容复制到 QX 的 `[rewrite_local]` 段落。
+2. 将 `/qx/rules/` 下的 `.list` 文件内容复制到 QX 的 `[filter_local]` 段落。
+3. 将 `/qx/snippet/` 下的 `.snippet` 文件作为规则片段引用（或按需使用）。
+
+> 具体每个文件对应的 App，请查看 `/qx/README.md`。
 
 ---
 
 ## 🙏 致谢
 
-| 项目 | 链接 |
-|------|------|
-| 可达鸭（原仓库） | [https://github.com/qitoqito/psyduck](https://github.com/qitoqito/psyduck) |
-| ShellCrash | [https://github.com/juewuy/ShellCrash](https://github.com/juewuy/ShellCrash) |
-| FRPS 社区 | — |
-
----
-
-<p align="center">
-  <em>⭐ 如果本项目对您有帮助，欢迎 Star 支持！</em>
-</p>
+本仓库规则来源于 [zqzess/rule_for_quantumultX](https://github.com/zqzess/rule_for_quantumultX)，感谢原作者的无私分享与持续维护。
