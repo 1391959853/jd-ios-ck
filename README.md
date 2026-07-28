@@ -6,6 +6,14 @@
 
 ---
 
+## 📑 分支说明
+
+| 分支 | 用途 | 核心文件 |
+|:----:|------|:--------:|
+| `main` | Quantumult X 去广告规则 | `qx.conf` |
+| `X` | 京东 Cookie 自动化脚本 | `JDcookie.js` / `wskey-update.py` |
+
+---
 ## 📦 项目说明
 
 本仓库通过 GitHub Actions 每日自动同步自 **[zqzess/rule_for_quantumultX](https://github.com/zqzess/rule_for_quantumultX)** 的 `QuantumultX` 目录下的三个核心文件夹（`rewrite/`、`rules/`、`snippet/`）。
