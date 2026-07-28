@@ -55,20 +55,6 @@ qx/
 
 ---
 
-## 🔄 同步状态
-
-| 项目 | 值 |
-|------|-----|
-| 最后同步时间 | `{{ last_sync_time }}` |
-| Rewrite 文件数 | `{{ rewrite_total }}` |
-| Rules 文件数 | `{{ rules_total }}` |
-| Snippet 文件数 | `{{ snippet_count }}` |
-| 文件总数 | `{{ total_files }}` |
-
-> ⚠️ **以上数据由脚本自动更新**
-
----
-
 ## 🚀 使用方法
 
 ### 方式一：本地导入
