@@ -14,6 +14,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Set, Tuple
+from datetime import datetime, timezone, timedelta
 
 # ==================== 配置 ====================
 UPSTREAM_REPO = "https://github.com/zqzess/rule_for_quantumultX.git"
@@ -241,7 +242,7 @@ def collect_stats() -> Dict:
         "snippet_count": len(snippet_files),
         "file_stats": file_stats,
         "total_files": len(file_stats),
-        "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "last_sync": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
