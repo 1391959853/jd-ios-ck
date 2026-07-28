@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/QuantumultX-adblock-orange" alt="QuantumultX">
 </p>
 
-基于 [**可达鸭**](https://github.com/qitoqito/psyduck) 仓库改造，提供 iOS 端去广告规则及京东 Cookie 自动化工具。
+
 
 ---
 
@@ -39,7 +39,7 @@
        └──> 下载配置
 
 2. 粘贴以下链接：
-   https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/qx.conf
+   https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/qx/qx.conf
 
 3. 点击【确定】生效
 ```
