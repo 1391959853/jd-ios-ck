@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  jd-cookie-api:
+    build: .
+    container_name: jd-cookie-api
+    restart: unless-stopped
+    ports:
+      - "9090:9090"   # 宿主机端口可修改
+    # 注意：配置已硬编码在 app.py 中，无需环境变量
