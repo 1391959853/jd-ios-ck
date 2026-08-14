@@ -1,0 +1,13 @@
+#!name=京东Cookie获取
+#!desc=自动获取京东Cookie并提交到API（远程脚本版）
+#!author=YourName
+#!category=Script
+
+[Script]
+# 匹配 sh.jd.com 的请求（wskey 请求）
+http-request ^https?://sh\.jd\.com/ script-path=https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/X/shadowrocket/jdcookie.js
+# 匹配 api.m.jd.com 的特定接口（pt_key 请求）
+http-request ^https?://api\.m\.jd\.com/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig) script-path=https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/X/shadowrocket/jdcookie.js
+
+[MITM]
+hostname = sh.jd.com, api.m.jd.com

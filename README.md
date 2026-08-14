@@ -13,30 +13,35 @@
 
 ## 🚀 快速开始
 
-本项目包含两个核心部分：
+本项目包含三个核心部分：
 
 | 组件 | 用途 | 快速入口 |
 |:----:|------|:--------:|
-| 📱 **iOS 端** | 通过 Surge/Quantumult X 捕获京东 Cookie | [查看 iOS 部署说明 →](./JD/README.md) |
-| 🐉 **青龙端** | 定时转换 wskey 为 pt_key | [查看青龙脚本说明 →](./JD/README.md#青龙脚本) |
-| 🔧 **服务端** | Flask API 接收并同步 Cookie 到青龙 | [查看 API 部署说明 →](./api/README.md) |
+| 📱 **iOS 端** | 通过 Qx/Surge 捕获京东 Cookie | [查看部署说明（含 Qx 配置） →](./ios/README.md) |
+| 🐉 **青龙端** | 定时转换 wskey 为 pt_key | [查看青龙脚本说明 →](./ql/README.md) |
+| 🔧 **服务端** | Flask API 接收并同步 Cookie | [查看 API 部署说明 →](./api/README.md) |
 
 ---
 
-## 📁 目录结构
+## 📁 项目结构
 
 ```
 jd-ios-ck/
-├── JD/                  # iOS 脚本和青龙脚本
+├── ios/                   # iOS 端脚本和模块（⭐ 含 Qx 配置）
 │   ├── JDcookie.js              # iOS 代理工具脚本
 │   ├── JDcookie2api.sgmodule    # Surge 模块
-│   ├── wskey-update.py          # 青龙面板 Python 脚本
+│   ├── JDcookie2qx.conf         # Quantumult X 重写配置
 │   └── README.md                # iOS 端详细说明
-├── api/                 # 服务端 API（可选）
+├── ql/                    # 青龙面板脚本
+│   ├── wskey-update.py          # wskey 转换脚本
+│   ├── psyduck-ipv6.py          # IPv6 支持脚本
+│   └── README.md                # 青龙脚本说明
+├── api/                   # 服务端 API（可选）
 │   ├── app.py                   # Flask API 服务器
 │   ├── Dockerfile               # Docker 部署
 │   └── README.md                # API 部署说明
-└── README.md            # 本文件（项目总览）
+├── README.md              # 本文件（项目总览）
+└── .gitignore
 ```
 
 ---
@@ -44,10 +49,88 @@ jd-ios-ck/
 ## 🎯 核心功能
 
 - ✅ **自动捕获** - iOS 打开京东 App 时自动获取 Cookie
-- ✅ **智能配对** - 基于时间窗口和 pin_hash 映射自动配对 wskey 和 pt_key
+- ✅ **智能配对** - 基于时间窗口和 pin_hash 映射自动配对
 - ✅ **青龙同步** - 自动提交到青龙面板环境变量
 - ✅ **代理池** - 动态从 FRPS 获取 SOCKS5 代理
 - ✅ **智能通知** - Bark 推送，仅失败时通知
+
+---
+
+## ⚡ 3 分钟快速部署
+
+### 方式 1: Quantumult X（推荐）⭐
+
+> 💡 **提示**: Quantumult X 用户请优先使用此方式
+
+#### Step 1. 添加重写
+
+打开 Quantumult X → 配置 → 重写 → 添加远程重写：
+
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2qx.conf
+```
+
+#### Step 2. 添加脚本
+
+配置 → 脚本库 → 添加远程脚本：
+
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie.js
+```
+
+#### Step 3. 配置 MitM
+
+设置 → 通用 → MitM → 启用 → 域名：
+```
+api.m.jd.com
+sh.jd.com
+```
+
+#### Step 4. 信任证书
+
+设置 → 通用 → 关于本机 → 证书信任设置 → 信任证书
+
+#### Step 5. 测试
+
+打开京东 App → 查看 Quantumult X 日志输出
+
+---
+
+### 方式 2: Surge
+
+#### 安装模块
+
+在 Surge 中打开：
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2api.sgmodule
+```
+
+然后信任证书 → 开启 MitM → 打开京东 App
+
+---
+
+### 方式 3: 青龙面板配置
+
+#### Step 1. 添加脚本
+
+青龙面板 → 脚本管理 → 新建脚本 → 复制 `wskey-update.py`
+
+#### Step 2. 配置环境变量
+
+| 变量名 | 必填 | 说明 |
+|--------|:----:|------|
+| `FRPS_API_URL` | ✅ | FRPS 代理接口地址 |
+| `FRPS_API_AUTH` | ✅ | FRPS 认证（username:password） |
+| `XIEQU_UID` | ✅ | 携趣 UID |
+| `XIEQU_UKEY` | ✅ | 携趣 UKey |
+| `BARK_SERVER` | ❌ | Bark 服务器地址 |
+
+#### Step 3. 设置定时任务
+
+推荐每 **4~6 小时** 运行一次：
+```crontab
+0 */4 * * *
+```
 
 ---
 
@@ -55,38 +138,10 @@ jd-ios-ck/
 
 | 文档 | 说明 |
 |------|------|
-| [📱 iOS 端部署指南](./JD/README.md) | Surge/Quantumult X 配置、JS 脚本说明 |
-| [🐉 青龙脚本说明](./JD/README.md#青龙脚本) | wskey-update.py 配置与定时任务 |
+| [📱 iOS 端部署指南](./ios/README.md) | **Quantumult X**/Surge/Loon 配置详解 |
+| [🐉 青龙脚本说明](./ql/README.md) | `wskey-update.py` 配置与定时任务 |
 | [🔧 服务端 API 部署](./api/README.md) | Flask API 服务器部署（可选） |
-| [❓ 常见问题](./JD/README.md#故障排查) | 故障排查与解决方案 |
-
----
-
-## ⚡ 3 分钟快速部署
-
-#### Step 1: iOS 端配置
-
-1. 在 Surge 中安装模块：
-   ```
-   https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/JD/JDcookie2api.sgmodule
-   ```
-2. 开启 MitM 并信任证书
-3. 打开京东 App → 自动捕获 Cookie
-
-#### Step 2: 青龙面板配置
-
-1. 添加脚本：`wskey-update.py`
-2. 配置环境变量：`FRPS_API_URL`、`XIEQU_UID`、`XIEQU_UKEY`
-3. 设置定时任务：`0 */4 * * *`（每 4 小时）
-
-#### Step 3: 服务端部署（可选）
-
-如需自建 API：
-```bash
-cd api && docker-compose up -d
-```
-
-> **详细说明请查看各模块文档**
+| [❓ 常见问题](./ios/README.md#故障排查) | 故障排查与解决方案 |
 
 ---
 
@@ -105,7 +160,7 @@ cd api && docker-compose up -d
 |------|------|
 | GitHub 仓库 | https://github.com/1391959853/jd-ios-ck |
 | 原项目（可达鸭） | https://github.com/qitoqito/psyduck |
-|青龙面板 | https://github.com/whyour/qinglong |
+| 青龙面板 | https://github.com/whyour/qinglong |
 
 ---
 

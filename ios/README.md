@@ -10,44 +10,107 @@
 |------|------|------|
 | [`JDcookie.js`](./JDcookie.js) | 核心脚本 | 拦截京东 App 请求，获取 wskey 和 pt_key |
 | [`JDcookie2api.sgmodule`](./JDcookie2api.sgmodule) | Surge 模块 | 一键订阅，自动配置重写和 MitM |
-| [`wskey-update.py`](./wskey-update.py) | 青龙脚本 | 定时转换 wskey 为 pt_key（青龙面板使用） |
 | `京东京豆显示美化 + 优化.scriptable` | 快捷指令 | iOS 桌面显示京豆数量（可选） |
 
 ---
 
 ## 🚀 快速部署
 
-### 方法 1: Surge（推荐）✨
+### 方法 1: Quantumult X（推荐）⭐
 
-| 步骤 | 操作 |
-|------|------|
-| **1. 安装模块** | 在 Surge 中打开模块链接 |
-| **2. 信任证书** | 设置 → 通用 → 关于本机 → 证书信任设置 |
-| **3. 开启 MitM** | 域名：`api.m.jd.com`, `sh.jd.com` |
-| **4. 使用** | 打开京东 App，自动捕获 |
+> 💡 **提示**: Quantumult X 用户请使用此方法
 
-**模块链接**:
+#### Step 1. 添加重写规则
+
+打开 Quantumult X → 配置 → 重写 → 添加远程重写：
+
 ```
-https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/JD/JDcookie2api.sgmodule
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2qx.conf
 ```
+
+或者手动添加本地重写：
+
+```ini
+[rewrite_local]
+^https?://sh\.jd\.com/ url script-request-header JDcookie.js
+^https?://api\.m\.jd\.com/client\.action\?functionId=(wareBusiness|serverConfig|basicConfig) url script-request-header JDcookie.js
+```
+
+#### Step 2. 添加脚本
+
+配置 → 脚本库 → 添加远程脚本：
+
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie.js
+```
+
+或复制 `JDcookie.js` 内容到本地脚本。
+
+#### Step 3. 配置 MitM
+
+设置 → 通用 → MitM → 启用 MitM → 域名：
+
+```
+api.m.jd.com
+sh.jd.com
+```
+
+#### Step 4. 信任证书
+
+设置 → 通用 → 关于本机 → 证书信任设置 → 信任完全信任证书
+
+#### Step 5. 测试
+
+打开京东 App → 浏览商品 → 查看 Quantumult X 日志是否有输出
 
 ---
 
-### 方法 2: Quantumult X
+### 方法 2: Surge
 
-**配置文件**:
+#### Step 1. 安装模块
+
+在 Surge 中打开模块链接：
+
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2api.sgmodule
+```
+
+#### Step 2. 信任证书
+
+设置 → 通用 → 关于本机 → 证书信任设置 → 信任自签名证书
+
+#### Step 3. 开启 MitM
+
+启用 MITM → 域名：`api.m.jd.com`, `sh.jd.com`
+
+#### Step 4. 使用
+
+打开京东 App，自动捕获 Cookie
+
+---
+
+### 方法 3: Loon
+
+#### Step 1. 添加插件
+
+插件 → 添加远程插件：
+
+```
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2loon.plugin
+```
+
+#### Step 2. 配置重写
+
+设置 → 功能设置 → 重写管理 → 添加：
+
 ```ini
-[rewrite_local]
-^https?://(api\.m\.jd\.com|sh\.jd\.com)/ url script-request-header JDcookie.js
-
-[mitm]
-hostname=api.m.jd.com, sh.jd.com
+[Remote]
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2loon.conf, tag=京东 Cookie 捕获, enabled=true
 ```
 
-**脚本地址**:
-```
-https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/JD/JDcookie.js
-```
+#### Step 3. 信任证书
+
+设置 → 通用 → 证书信任设置 → 信任证书
 
 ---
 
@@ -83,7 +146,7 @@ graph LR
 
 #### 配置说明
 
-编辑 `JDcookie.js` 修改 API 地址：
+编辑 `JDcookie.js` 第 5 行，修改 API 地址：
 
 ```javascript
 // 第 5 行：修改为你的 API 服务器地址
@@ -103,38 +166,29 @@ const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 
 ---
 
-## 🐉 青龙脚本
+## 📱 Quantumult X 详细配置
 
-### wskey-update.py
+### 完整配置文件示例
 
-**用途**: 在青龙面板定时运行，将 `JD_WSCK` 转换为 `JD_COOKIE`
+创建 `JDcookie.conf`：
 
-#### 功能特性
+```ini
+[filter_remote]
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/JDcookie.filter, tag=京东 Cookie 捕获，enabled=true
 
-- ✅ 动态从 FRPS 获取 SOCKS5 代理
-- ✅ 携趣代理白名单管理
-- ✅ 4 小时冷却机制
-- ✅ Bark 分组通知（仅失败推送）
-- ✅ 自动备注替换为 `京东账号：{pt_pin} - 转换时间:xxxx`
+[rewrite_remote]
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2qx.conf, tag=京东 Cookie 重写，enabled=true
 
-#### 环境变量
+[script_remote]
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie.js, tag=JDcookie, img-url=jd_logo.png, enabled=true
 
-| 变量名 | 必填 | 说明 |
-|--------|:----:|------|
-| `FRPS_API_URL` | ✅ | FRPS 代理接口地址 |
-| `FRPS_API_AUTH` | ✅ | FRPS 认证（username:password） |
-| `XIEQU_UID` | ✅ | 携趣 UID |
-| `XIEQU_UKEY` | ✅ | 携趣 UKey |
-| `BARK_SERVER` | ❌ | Bark 服务器地址 |
-| `DEBUG_MODE` | ❌ | 调试模式（true/false） |
-
-#### 定时任务
-
-推荐每 **4~6 小时** 运行一次：
-
-```crontab
-0 */4 * * *
+[mitm]
+hostname=api.m.jd.com, sh.jd.com
 ```
+
+### 日志查看
+
+配置 → 脚本 → 运行日志 → 选择 `JDcookie` 查看输出
 
 ---
 
@@ -142,9 +196,17 @@ const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 
 ### 查看日志
 
-1. 打开脚本编辑器（如 Scriptable）
-2. 运行 `JDcookie.js`
-3. 查看控制台输出
+#### Quantumult X
+
+1. 打开 Quantumult X
+2. 配置 → 脚本 → 运行日志
+3. 选择 `JDcookie` 查看输出
+
+#### Surge
+
+1. 打开 Surge
+2. 主界面 → 下方日志图标
+3. 筛选 `JDcookie` 关键字
 
 ### 常见问题
 
@@ -166,13 +228,14 @@ const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 - 确认 `API_URL` 配置正确
 - 测试：`curl http://your-api:9090/health`
 
-#### 3. 映射已验证但 pt_pin 错误
+#### 3. Quantumult X 无响应
 
-**症状**: 配对成功但提交后校验失败
+**症状**: 脚本不执行
 
 **解决**:
-- 删除该账号的映射绑定
-- 重新捕获 wskey 和 pt_key
+- 检查 MitM 是否启用
+- 确认证书已信任
+- 重写规则是否生效（绿色勾选）
 
 ---
 
@@ -182,7 +245,7 @@ const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
 |------|------|
 | Surge 模块 | [JDcookie2api.sgmodule](./JDcookie2api.sgmodule) |
 | 核心脚本 | [JDcookie.js](./JDcookie.js) |
-| 青龙脚本 | [wskey-update.py](./wskey-update.py) |
+| 青龙脚本 | [../ql/wskey-update.py](../ql/wskey-update.py) |
 | 服务端文档 | [../api/README.md](../api/README.md) |
 
 ---
