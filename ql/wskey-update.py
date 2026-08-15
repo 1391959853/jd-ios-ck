@@ -104,7 +104,6 @@ def fetch_proxies_from_frps() -> List[str]:
 # ========== 代理测试 ==========
 def get_ip_through_proxy(proxies: dict) -> Optional[str]:
     api_list = [
-        "https://api.ipify.org",
         "https://checkip.amazonaws.com",
         "https://icanhazip.com",
         "https://ident.me",
@@ -171,7 +170,6 @@ def get_next_available_proxy() -> Tuple[Optional[str], Optional[dict], Optional[
 # ========== 公网 IP 获取 ==========
 def get_public_ip() -> Optional[str]:
     api_list = [
-        "https://api.ipify.org",
         "https://checkip.amazonaws.com",
         "https://icanhazip.com",
         "https://ident.me",
