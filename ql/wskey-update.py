@@ -37,8 +37,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 DEBUG_MODE = os.environ.get("DEBUG_MODE", "False").lower() == "true"
 
 # ========== FRPS API 配置 ==========
-FRPS_API_URL = os.environ.get("FRPS_API_URL", "http://192.168.2.17:7500/api/proxy/tcp")
-FRPS_API_AUTH = os.environ.get("FRPS_API_AUTH", "admin:admin")
+FRPS_API_URL = os.environ.get("FRPS_API_URL", "http://192.168.10.10:7500/api/proxy/tcp")
+FRPS_API_AUTH = os.environ.get("FRPS_API_AUTH", "")
 
 # ========== Bark 分组配置 ==========
 BARK_GROUP_MAP = {
