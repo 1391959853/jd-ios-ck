@@ -9,14 +9,52 @@ import json
 import sys
 import threading
 import random
+import logging
+import logging.handlers
+from datetime import datetime
+
+# ========== Bark 通知配置 ==========
+BARK_API = "https://api.day.app"
+
+# Token 与端口映射：一个 token 可对应多个端口
+TOKEN_PORT_MAP = {
+    "your_bark_token_1": [1234, 5678],
+    "your_bark_token_2": [9000, 9001],
+}
+
+# 连续失败状态文件
+FAIL_COUNT_FILE = "/var/log/psyduck_frps_fail_count"
+FAIL_THRESHOLD = 2
+# ===================================
+
+# ---------- 日志配置 ----------
+LOG_FILE = "/var/log/psyduck-proxy-updater.log"
+
+def setup_logging():
+    logger = logging.getLogger("FrpsProxyUpdater")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=5*1024*1024, backupCount=3
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        logger.addHandler(handler)
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+        logger.addHandler(console)
+    return logger
+
+logger = setup_logging()
+
 
 class Spinner:
     """旋转进度条类"""
-    def __init__(self, message="正在获取"):
+    def __init__(self, message="正在获取", enabled=True):
         self.message = message
         self.spinner_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self.done = False
         self.thread = None
+        self.enabled = enabled
     
     def _spin(self):
         i = 0
@@ -27,25 +65,31 @@ class Spinner:
             i += 1
     
     def start(self):
+        if not self.enabled:
+            return
         self.done = False
         self.thread = threading.Thread(target=self._spin)
         self.thread.daemon = True
         self.thread.start()
     
     def stop(self, success=True, message=""):
+        if not self.enabled:
+            if success:
+                logger.info(message)
+            else:
+                logger.warning(message)
+            return
         self.done = True
         if self.thread:
             self.thread.join()
-        if success:
-            sys.stdout.write(f"\r{message} ✅\n")
-        else:
-            sys.stdout.write(f"\r{message} ❌\n")
+        sys.stdout.write(f"\r{message} {'✅' if success else '❌'}\n")
         sys.stdout.flush()
+
 
 class FrpsProxyUpdater:
     def __init__(self, verbose=False):
         self.frps_url = "http://192.168.10.10:7500"
-        self.base_url = "http://192.168.10.10"   # 正确的 FRPS 服务器地址
+        self.base_url = "http://192.168.10.10"
         self.config_path = "qitoqito_psyduck/config/proxy.ini"
         self.verbose = verbose
         
@@ -53,11 +97,61 @@ class FrpsProxyUpdater:
         if self.verbose:
             print(message)
     
+    # ========== 失败计数管理 ==========
+    def read_fail_count(self):
+        """读取连续失败次数"""
+        try:
+            with open(FAIL_COUNT_FILE, 'r') as f:
+                return int(f.read().strip())
+        except:
+            return 0
+    
+    def write_fail_count(self, count):
+        """写入连续失败次数"""
+        try:
+            os.makedirs(os.path.dirname(FAIL_COUNT_FILE), exist_ok=True)
+            with open(FAIL_COUNT_FILE, 'w') as f:
+                f.write(str(count))
+        except Exception as e:
+            logger.warning(f"写入失败计数文件失败: {e}")
+    
+    def reset_fail_count(self):
+        """重置连续失败次数"""
+        self.write_fail_count(0)
+        logger.info("已重置 FRPS 失败计数")
+    
+    # ========== Bark 通知 ==========
+    def send_bark_notification(self, token, message):
+        """发送 Bark 通知到指定 token"""
+        try:
+            url = f"{BARK_API}/{token}/{message}"
+            requests.get(url, timeout=5)
+            logger.info(f"Bark 通知已发送 (token: {token[:8]}...)")
+            return True
+        except Exception as e:
+            logger.warning(f"发送 Bark 通知失败 (token: {token[:8]}...): {e}")
+            return False
+    
+    def notify_affected_tokens(self, ports):
+        """
+        通知所有配置了端口的 token
+        每个 token 只发一条通知，包含其负责的所有受影响端口
+        """
+        if not ports:
+            return
+        
+        for token, token_ports in TOKEN_PORT_MAP.items():
+            # 找出该 token 负责的端口中，哪些在当前 ports 列表中
+            affected = [p for p in token_ports if p in ports]
+            if affected:
+                port_str = ", ".join(map(str, affected))
+                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                message = f"时间：{current_time}，您部署的代理端口 {port_str} 未发现 IPv6，请检查一下您的设备电源与公网 IPv6 是否通畅。"
+                self.send_bark_notification(token, message)
+    
+    # ========== 核心功能 ==========
     def get_frps_ports(self):
-        """
-        从 FRPS API 自动获取 psyduck 穿透端口列表
-        匹配规则：节点名称以 psyduck 开头，后接 4 位数字（如 psyduck1234），且状态为 online
-        """
+        """从 FRPS API 获取 psyduck 穿透端口列表"""
         try:
             api_url = f"{self.frps_url}/api/proxy/tcp"
             self.log(f"正在从 FRPS API 获取端口: {api_url}")
@@ -83,18 +177,18 @@ class FrpsProxyUpdater:
             self.log(f"从 FRPS API 获取到 {len(ports)} 个端口: {ports}")
             return ports
         except requests.exceptions.RequestException as e:
-            print(f"获取 FRPS 端口列表失败: {e}")
+            logger.error(f"FRPS API 请求失败: {e}")
             return []
         except json.JSONDecodeError as e:
-            print(f"解析 FRPS API 响应失败: {e}")
+            logger.error(f"FRPS API 响应解析失败: {e}")
             return []
         except Exception as e:
-            print(f"获取 FRPS 端口时发生未知错误: {e}")
+            logger.error(f"获取 FRPS 端口时发生未知错误: {e}")
             return []
     
     def get_ipv6_from_port(self, port, max_retries=3):
         """通过指定端口获取IPv6地址，支持重试"""
-        spinner = Spinner(f"端口 {port}")
+        spinner = Spinner(f"端口 {port}", enabled=self.verbose)
         spinner.start()
         
         for attempt in range(max_retries):
@@ -119,7 +213,6 @@ class FrpsProxyUpdater:
                         self.log(f"端口 {port} 返回的addresses为空")
                 else:
                     self.log(f"端口 {port} 返回的响应不成功或无addresses字段")
-                    return None
                 
             except requests.exceptions.RequestException as e:
                 self.log(f"从端口 {port} 获取IPv6失败 (尝试 #{attempt+1}): {e}")
@@ -285,9 +378,35 @@ class FrpsProxyUpdater:
         print("\n开始获取FRPS端口信息...")
         
         ports = self.get_frps_ports()
+        
+        # ========== 核心维护逻辑 ==========
         if not ports:
+            logger.warning("FRPS API 未返回任何 psyduck 端口")
+            
+            fail_count = self.read_fail_count() + 1
+            self.write_fail_count(fail_count)
+            logger.info(f"FRPS 获取失败计数: {fail_count}/{FAIL_THRESHOLD}")
+            
+            if fail_count >= FAIL_THRESHOLD:
+                logger.warning(f"连续 {FAIL_THRESHOLD} 次获取 FRPS 端口失败，触发通知")
+                # 通知所有配置了端口的 token
+                all_ports = []
+                for token_ports in TOKEN_PORT_MAP.values():
+                    all_ports.extend(token_ports)
+                if all_ports:
+                    self.notify_affected_tokens(all_ports)
+                else:
+                    logger.warning("未配置任何端口映射，跳过通知")
+                self.reset_fail_count()
+            else:
+                logger.info(f"未达到通知阈值 ({FAIL_THRESHOLD})，跳过通知")
+            
             print("未找到有效端口，脚本结束")
             return
+        
+        # 获取端口成功，重置失败计数
+        if self.read_fail_count() > 0:
+            self.reset_fail_count()
         
         print(f"将尝试以下端口: {ports}")
         
@@ -305,7 +424,6 @@ class FrpsProxyUpdater:
         
         filtered_ports = self.filter_ports_by_ipv6_segment(port_ipv6_pairs)
         
-        # 关键修改：使用 self.base_url 作为 IP，而不是硬编码 192.168.2.254
         proxy_urls = [f"{self.base_url}:{port}" for port in filtered_ports]
         
         print(f"\n最终代理URL列表 (原始顺序): {proxy_urls}")
@@ -319,10 +437,12 @@ class FrpsProxyUpdater:
         
         print("脚本执行完成")
 
+
 def main():
     VERBOSE = False
     updater = FrpsProxyUpdater(verbose=VERBOSE)
     updater.run()
+
 
 if __name__ == "__main__":
     main()
