@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.21
+#   版本：9.22
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -14,11 +14,11 @@
 #         - SOCKS5 镜像只构建一次
 #         - 重构：.sources 格式仅替换域名保留路径
 #         - 重构：git clone/pull 增加 3 分钟超时与重试
-#         - 重构：网卡检测完全基于 IPv6（放弃 IPv4）
+#         - 重构：网卡检测仅认可四大运营商公网 IPv6 前缀（240e/2408/2409/240a）
 #         - 重构：docker network rm 增加 -f 强制删除
 #         - 重构：quick_check 修复流程增加删除 SOCKS5 容器
 #         - 重构：DEBUG 模式预先清理非 SSH 容器
-#         - 重构：select_deployment_mode 先检测 IPv6 可用网卡，仅一个时自动单网口
+#         - 重构：select_deployment_mode 先检测可用网卡，仅一个时自动单网口
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -141,11 +141,9 @@ deb http://security.debian.org/debian-security bookworm-security main contrib no
             ;;
     esac
 
-    # 优先检测 .sources 格式（DEB822）
     if [ -f /etc/apt/sources.list.d/debian.sources ] || [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
         for f in /etc/apt/sources.list.d/*.sources; do
             if [ -f "$f" ]; then
-                # 仅替换域名，保留路径（如 /ubuntu、/debian）
                 sed -i "s#URIs: https\?://[^/]*/#URIs: http://$mirror/#g" "$f"
                 log_success "已修改 $f"
             fi
@@ -225,7 +223,7 @@ test_alpine_mirrors() {
     log_success "选择最快的 Alpine 镜像源: $FASTEST_ALPINE_MIRROR (速度 ${best_speed} B/s)"
 }
 
-# ==================== 安装 Docker（增强下载可靠性） ====================
+# ==================== 安装 Docker ====================
 install_docker() {
     if command -v docker &>/dev/null; then
         log_success "Docker 已安装: $(docker --version)"
@@ -235,12 +233,6 @@ install_docker() {
     
     local tmp_script=$(mktemp)
     local success=false
-    local urls=(
-        "https://get.docker.com"
-        "https://get.docker.com/"
-        "https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-26.1.4.tgz"
-    )
-    
     for i in {1..3}; do
         log_info "尝试下载安装脚本 (第 $i 次)..."
         if curl -fsSL --retry 3 --connect-timeout 10 "https://get.docker.com" -o "$tmp_script"; then
@@ -253,7 +245,6 @@ install_docker() {
     
     if [ "$success" = false ]; then
         log_error "下载 Docker 安装脚本失败，请检查网络或手动安装 Docker。"
-        log_info "您可以尝试手动运行：curl -fsSL https://get.docker.com | sh"
         exit 1
     fi
     
@@ -579,7 +570,7 @@ EOF
     log_success "SOCKS5 容器 $container_name 部署成功"
 }
 
-# ==================== 部署 SSH 容器（debug 不可删除） ====================
+# ==================== 部署 SSH 容器 ====================
 deploy_ssh_container() {
     local remote_ports=("$@")
     local port_str=$(printf "%s-" "${remote_ports[@]}"); port_str=${port_str%-}
@@ -665,24 +656,25 @@ EOF
     fi
 }
 
-# ==================== IPv6 网卡检测函数 ====================
+# ==================== IPv6 网卡检测函数（严格公网前缀） ====================
 check_iface_ipv6() {
     local iface=$1
-    local ipv6=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80' | head -1)
-    if [ -z "$ipv6" ]; then
-        return 1
-    fi
-    for host in ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
-        if ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null; then
-            return 0
-        fi
+    local addrs=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80')
+    [ -z "$addrs" ] && return 1
+
+    local public_addr=""
+    for addr in $addrs; do
+        case "$addr" in
+            240e:*|2408:*|2409:*|240a:*) public_addr="$addr"; break ;;
+        esac
     done
-    if ping -6 -c 1 -W 2 -I "$iface" 2001:4860:4860::8888 &>/dev/null; then
-        return 0
-    fi
-    if ping -6 -c 1 -W 2 -I "$iface" 2606:4700:4700::1111 &>/dev/null; then
-        return 0
-    fi
+    [ -z "$public_addr" ] && return 1
+
+    for host in sggg3326.top ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
+        ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null && return 0
+    done
+    ping -6 -c 1 -W 2 -I "$iface" 2001:4860:4860::8888 &>/dev/null && return 0
+    ping -6 -c 1 -W 2 -I "$iface" 2606:4700:4700::1111 &>/dev/null && return 0
     return 1
 }
 
@@ -935,7 +927,6 @@ quick_check() {
 generate_maintenance_script() {
     cat > "$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
-# 维护脚本：每天3点重启所有 psyduck 容器
 LOG="/var/log/psyduck_maintenance.log"
 echo "$(date) 开始维护重启" >> "$LOG"
 for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck'); do
