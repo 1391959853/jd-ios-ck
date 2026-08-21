@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.20
+#   版本：9.21
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -18,6 +18,7 @@
 #         - 重构：docker network rm 增加 -f 强制删除
 #         - 重构：quick_check 修复流程增加删除 SOCKS5 容器
 #         - 重构：DEBUG 模式预先清理非 SSH 容器
+#         - 重构：select_deployment_mode 先检测 IPv6 可用网卡，仅一个时自动单网口
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -284,12 +285,11 @@ install_git() {
     apt-get install -y git
 }
 
-# ==================== 7-9. 克隆仓库与构建主镜像 ====================
+# ==================== 克隆仓库与构建主镜像 ====================
 clone_and_build_main() {
     local repo="https://github.com/xoyoxoyo/relayApi.git"
     local mirror="https://gh.404cafe.fun/"
     
-    # 更新已有仓库
     if [ -d relayApi ]; then
         log_info "更新仓库..."
         cd relayApi
@@ -340,7 +340,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 10-11. 构建 SOCKS5 和 SSH 镜像 ====================
+# ==================== 构建 SOCKS5 和 SSH 镜像 ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -431,7 +431,7 @@ EOF
     cd / && rm -rf "$tmpd"
 }
 
-# ==================== 12-13. 网卡探测与 macvlan 网络创建 ====================
+# ==================== 网卡探测与 macvlan 网络创建 ====================
 get_physical_ifaces() {
     local ifaces=()
     for i in $(ls /sys/class/net/ | grep -vE 'lo|docker|br-|veth'); do
@@ -459,7 +459,6 @@ create_macvlan_network() {
         ipv6_prefix=$(echo "$ipv6_prefix" | cut -d':' -f1-2 | tr -d ':')
         log_warning "修正 IPv6 前缀为 $ipv6_prefix"
     fi
-    # 强制删除网络（-f），忽略已有容器占用
     docker network rm -f "$net_name" 2>/dev/null || true
     docker network create -d macvlan \
         --subnet="$subnet" \
@@ -471,7 +470,7 @@ create_macvlan_network() {
     log_success "创建网络 $net_name (IPv6 ${ipv6_prefix}:5a35:6fce::/64)"
 }
 
-# ==================== 14. 部署主容器 ====================
+# ==================== 部署主容器 ====================
 deploy_main_container() {
     local net_name=$1
     local remote_port=$2
@@ -541,7 +540,7 @@ EOF
     fi
 }
 
-# ==================== 15. 部署 SOCKS5 容器 ====================
+# ==================== 部署 SOCKS5 容器 ====================
 deploy_socks5_container() {
     local net_name=$1
     local remote_port=$2
@@ -580,7 +579,7 @@ EOF
     log_success "SOCKS5 容器 $container_name 部署成功"
 }
 
-# ==================== 16. 部署 SSH 容器（debug 不可删除） ====================
+# ==================== 部署 SSH 容器（debug 不可删除） ====================
 deploy_ssh_container() {
     local remote_ports=("$@")
     local port_str=$(printf "%s-" "${remote_ports[@]}"); port_str=${port_str%-}
@@ -666,22 +665,18 @@ EOF
     fi
 }
 
-# ==================== 核心交互与配置 ====================
-# IPv6 网卡检测函数（纯 IPv6）
+# ==================== IPv6 网卡检测函数 ====================
 check_iface_ipv6() {
     local iface=$1
-    # 获取非链路本地 IPv6 地址（排除 fe80::/10）
     local ipv6=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80' | head -1)
     if [ -z "$ipv6" ]; then
         return 1
     fi
-    # 优先尝试多个纯 IPv6 域名
     for host in ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
         if ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null; then
             return 0
         fi
     done
-    # 若域名解析失败，使用公共 IPv6 DNS 地址测试（不修改 DNS 配置）
     if ping -6 -c 1 -W 2 -I "$iface" 2001:4860:4860::8888 &>/dev/null; then
         return 0
     fi
@@ -691,42 +686,55 @@ check_iface_ipv6() {
     return 1
 }
 
+# ==================== 核心交互与配置 ====================
 select_deployment_mode() {
     local all=($(get_physical_ifaces))
-    if [ ${#all[@]} -eq 1 ]; then
-        DEPLOY_MODE="single"; SELECTED_INTERFACES=("${all[0]}")
-        log_info "单网卡 ${all[0]}，自动单网口模式"
-        return
+    if [ ${#all[@]} -eq 0 ]; then
+        log_error "未找到物理网卡"
+        exit 1
     fi
-    echo -e "${CYAN}请选择部署模式：\n  1) 单网口\n  2) 多网口${NC}"
-    read -p "请输入 1 或 2 [默认1]: " choice
-    if [[ "$choice" == "2" ]]; then
-        DEPLOY_MODE="multi"
-        local online=()
-        for i in "${all[@]}"; do
-            if check_iface_ipv6 "$i"; then
-                online+=("$i")
-                log_success "网卡 $i IPv6 连通性正常"
-            else
-                log_warning "网卡 $i IPv6 不可用"
-            fi
-        done
-        [ ${#online[@]} -eq 0 ] && { log_error "无可用 IPv6 网卡"; exit 1; }
-        echo -e "${CYAN}可用 IPv6 网卡："
-        for i in "${!online[@]}"; do echo "  $((i+1))) ${online[$i]}"; done
-        read -p "选择编号（如 1 2 3 或 all）: " sel
-        if [ "$sel" = "all" ]; then SELECTED_INTERFACES=("${online[@]}")
+
+    local online=()
+    for i in "${all[@]}"; do
+        if check_iface_ipv6 "$i"; then
+            online+=("$i")
+            log_success "网卡 $i IPv6 连通性正常"
         else
-            SELECTED_INTERFACES=()
-            for n in $sel; do [ "$n" -ge 1 ] && [ "$n" -le ${#online[@]} ] && SELECTED_INTERFACES+=("${online[$((n-1))]}"); done
+            log_warning "网卡 $i IPv6 不可用"
         fi
-        [ ${#SELECTED_INTERFACES[@]} -eq 0 ] && { log_error "无效选择"; exit 1; }
-        log_success "已选: ${SELECTED_INTERFACES[*]}"
-    else
+    done
+
+    if [ ${#online[@]} -eq 0 ]; then
+        log_error "无可用 IPv6 网卡"
+        exit 1
+    elif [ ${#online[@]} -eq 1 ]; then
         DEPLOY_MODE="single"
-        local def=$(ip route | grep default | awk '{print $5}' | head -1)
-        [ -z "$def" ] && def="${all[0]}"
-        SELECTED_INTERFACES=("$def")
+        SELECTED_INTERFACES=("${online[0]}")
+        log_info "仅一个网卡可通过 IPv6 测试，自动单网口模式，使用 ${online[0]}"
+        return
+    else
+        echo -e "${CYAN}检测到多个可用 IPv6 网卡，请选择部署模式：\n  1) 单网口\n  2) 多网口${NC}"
+        read -p "请输入 1 或 2 [默认1]: " choice
+        if [[ "$choice" == "2" ]]; then
+            DEPLOY_MODE="multi"
+            echo -e "${CYAN}可用 IPv6 网卡："
+            for i in "${!online[@]}"; do echo "  $((i+1))) ${online[$i]}"; done
+            read -p "选择编号（如 1 2 3 或 all）: " sel
+            if [ "$sel" = "all" ]; then
+                SELECTED_INTERFACES=("${online[@]}")
+            else
+                SELECTED_INTERFACES=()
+                for n in $sel; do
+                    [ "$n" -ge 1 ] && [ "$n" -le ${#online[@]} ] && SELECTED_INTERFACES+=("${online[$((n-1))]}")
+                done
+            fi
+            [ ${#SELECTED_INTERFACES[@]} -eq 0 ] && { log_error "无效选择"; exit 1; }
+            log_success "已选: ${SELECTED_INTERFACES[*]}"
+        else
+            DEPLOY_MODE="single"
+            SELECTED_INTERFACES=("${online[0]}")
+            log_info "单网口模式，使用 ${online[0]}"
+        fi
     fi
 }
 
@@ -785,7 +793,6 @@ EOF
 
 # ==================== 主部署流程 ====================
 deploy_all() {
-    # 调试模式：预先清理所有非 SSH 容器
     if [ "$DEBUG_MODE" = true ]; then
         log_warning "调试模式：清理所有非 SSH 的现有 psyduck 容器..."
         for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck' | grep -v 'psyduck-ssh'); do
@@ -897,23 +904,18 @@ quick_check() {
             fi
         fi
 
-        # 修复流程：删除主容器和 SOCKS5 容器，重建网络
         if [ "$test_passed" = false ]; then
             log_warning "容器 $container /ipv6 端点不可达，执行修复（删除容器并重建网络）..."
             
-            # 删除主容器和 SOCKS5 容器
             docker rm -f "$container" 2>/dev/null || true
             docker rm -f "$socks5_container" 2>/dev/null || true
             log_info "已删除容器: $container, $socks5_container"
             
-            # 重建网络
             create_macvlan_network "$net_name" "$iface" "$subnet" "$gw" "$ipv6_prefix"
             
-            # 重新部署主容器和 SOCKS5 容器
             deploy_main_container "$net_name" "$rport" "$gw"
             deploy_socks5_container "$net_name" "$rport" "$sport" "$iface"
             
-            # 再次测试
             container_ipv4=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container" 2>/dev/null)
             if [ -n "$container_ipv4" ] && docker run --rm --network "$net_name" alpine sh -c "wget -q -O- http://$container_ipv4:24678/ipv6" &>/dev/null; then
                 log_success "修复后容器 $container /ipv6 端点可达"
