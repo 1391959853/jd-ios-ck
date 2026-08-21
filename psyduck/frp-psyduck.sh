@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.22
+#   版本：9.24
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -11,7 +11,8 @@
 #         - 仅在需要构建镜像时测速 Alpine 源
 #         - 部署完成后自动重启所有非 SSH 容器
 #         - 快速检查使用临时容器测试 /ipv6 端点
-#         - SOCKS5 镜像只构建一次
+#         - SOCKS5 镜像改用 gost + frp（账户 xiaoz / a1391959853）
+#         - SOCKS5 镜像构建自适应架构（amd64/arm64/armv7）
 #         - 重构：.sources 格式仅替换域名保留路径
 #         - 重构：git clone/pull 增加 3 分钟超时与重试
 #         - 重构：网卡检测仅认可四大运营商公网 IPv6 前缀（240e/2408/2409/240a）
@@ -331,72 +332,95 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 构建 SOCKS5 和 SSH 镜像 ====================
+# ==================== 构建 SOCKS5 镜像（gost + frp，自适应架构） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
         return
     fi
-    log_info "构建 SOCKS5 镜像（使用 ${FASTEST_ALPINE_MIRROR}）..."
+
+    # 检测宿主机架构，确定下载包后缀
+    local arch=$(uname -m)
+    local frp_arch=""
+    local gost_arch=""
+    
+    case "$arch" in
+        x86_64)
+            frp_arch="amd64"
+            gost_arch="amd64"
+            ;;
+        aarch64|arm64)
+            frp_arch="arm64"
+            gost_arch="arm64"
+            ;;
+        armv7l|armv8l)
+            # frp 官方 armv7 包名为 linux_arm.tar.gz
+            frp_arch="arm"
+            # gost 官方 armv7 包名为 linux_armv7.tar.gz
+            gost_arch="armv7"
+            ;;
+        *)
+            log_error "不支持的架构: $arch"
+            exit 1
+            ;;
+    esac
+    
+    log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
+
+    log_info "构建 SOCKS5 镜像（gost + frp）..."
     local tmpd=$(mktemp -d)
     cd "$tmpd"
+
+    # 使用变量替换 Dockerfile 中的架构后缀
     cat > Dockerfile <<EOF
-FROM python:3-alpine
-RUN sed -i 's/dl-cdn.alpinelinux.org/${FASTEST_ALPINE_MIRROR}/g' /etc/apk/repositories && \\
-    apk add --no-cache frp
-WORKDIR /app
-COPY socks5_server.py entrypoint.sh ./
+FROM ubuntu:22.04
+
+# 替换为阿里云源（适配 arm64/armv7/amd64）
+RUN echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list
+
+# 安装 curl
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y curl && \
+    apt-get clean
+
+# 硬编码 SOCKS5 账号密码（按要求）
+ENV SOCKS_USER=xiaoz
+ENV SOCKS_PASS=a1391959853
+ENV FRP_VERSION=0.70.1
+ENV GOST_VERSION=2.12.0
+ENV GITHUB_PROXY=https://gh.404cafe.fun/
+
+# 下载 frpc（自适应架构）
+RUN curl -L --retry 5 --retry-delay 5 \
+         "\${GITHUB_PROXY}https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_${frp_arch}.tar.gz" \
+         | tar xz -C /tmp && \
+    mv /tmp/frp_*/frpc /usr/local/bin/ && \
+    chmod +x /usr/local/bin/frpc
+
+# 下载 gost（自适应架构）
+RUN curl -L --retry 5 --retry-delay 5 \
+         "\${GITHUB_PROXY}https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_${gost_arch}.tar.gz" \
+         | tar xz -C /tmp && \
+    find /tmp -name gost -exec mv {} /usr/local/bin/ \; && \
+    chmod +x /usr/local/bin/gost
+
+# 启动脚本（gost 监听 2233，frpc 使用挂载配置）
+RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://\${SOCKS_USER}:\${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
+    chmod +x /start.sh
+
 EXPOSE 2233
-CMD ["/app/entrypoint.sh"]
+CMD ["/start.sh"]
 EOF
-    cat > socks5_server.py <<'EOF'
-#!/usr/bin/env python3
-import socket, threading, sys
-def handle_client(c):
-    try:
-        d=c.recv(256)
-        if not d or d[0]!=0x05: c.close(); return
-        c.send(b"\x05\x00")
-        d=c.recv(256)
-        if len(d)<7 or d[1]!=0x01: c.close(); return
-        at=d[3]
-        if at==1:
-            addr=socket.inet_ntoa(d[4:8]); port=int.from_bytes(d[8:10],"big")
-        elif at==3:
-            l=d[4]; addr=d[5:5+l].decode(); port=int.from_bytes(d[5+l:5+l+2],"big")
-        else: c.close(); return
-        r=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        r.settimeout(30); r.connect((addr,port))
-        c.send(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
-        def f(s,d):
-            while True:
-                x=s.recv(4096)
-                if not x: break
-                d.send(x)
-        t1=threading.Thread(target=f,args=(c,r)); t2=threading.Thread(target=f,args=(r,c))
-        t1.daemon=True; t2.daemon=True; t1.start(); t2.start(); t1.join()
-    except: pass
-    finally: c.close()
-def main():
-    s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-    s.bind(("0.0.0.0",2233)); s.listen(5)
-    while True:
-        c,a=s.accept()
-        t=threading.Thread(target=handle_client,args=(c,)); t.daemon=True; t.start()
-if __name__=="__main__": main()
-EOF
-    cat > entrypoint.sh <<'EOF'
-#!/bin/sh
-python3 /app/socks5_server.py &
-exec /usr/bin/frpc -c /app/frpc.ini
-EOF
-    chmod +x *.sh
+
     docker build -t psyduck-socks5 .
     cd / && rm -rf "$tmpd"
     log_success "SOCKS5 镜像构建完成"
 }
 
+# ==================== 构建 SSH 镜像 ====================
 build_ssh_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$"; then
         log_success "SSH 镜像已存在"
@@ -539,12 +563,15 @@ deploy_socks5_container() {
     local iface=$4
     local container_name="psyduck${remote_port}-socks5"
     local workdir="/opt/psyduck-socks5-${iface}"
+    
     if ! docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_warning "SOCKS5 镜像缺失，正在构建..."
         build_socks5_image
     fi
+    
     docker rm -f "$container_name" 2>/dev/null || true
     rm -rf "$workdir" && mkdir -p "$workdir"
+    
     cat > "$workdir/frpc.ini" <<EOF
 [common]
 server_addr = $DEFAULT_SERVER_ADDR
@@ -559,6 +586,7 @@ remote_port = $socks5_port
 use_encryption = true
 use_compression = true
 EOF
+
     docker run -d \
         --name "$container_name" \
         --restart always \
@@ -567,7 +595,8 @@ EOF
         --add-host host.docker.internal:host-gateway \
         -e TZ=Asia/Shanghai \
         psyduck-socks5
-    log_success "SOCKS5 容器 $container_name 部署成功"
+    
+    log_success "SOCKS5 容器 $container_name 部署成功（gost + frp）"
 }
 
 # ==================== 部署 SSH 容器 ====================
