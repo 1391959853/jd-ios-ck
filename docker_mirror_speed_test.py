@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Docker 镜像加速器速度测试（强制清理缓存，实时打印拉取日志）
+Docker 镜像加速器速度测试（强制清理缓存，实时打印日志，北京时间，IP归属检测）
+如果代理出口 IP 非中国大陆，则立即退出。
 """
 
 import subprocess
@@ -9,6 +10,12 @@ import os
 import json
 import socket
 import sys
+import requests
+
+# ========== 设置时区为北京时间 ==========
+os.environ['TZ'] = 'Asia/Shanghai'
+time.tzset()
+# ======================================
 
 # ---------- 镜像站列表 ----------
 MIRRORS = [
@@ -42,7 +49,6 @@ SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")     # 请替换
 # ======================================================
 
 def find_free_port():
-    """找一个空闲端口"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(('127.0.0.1', 0))
     port = s.getsockname()[1]
@@ -50,7 +56,6 @@ def find_free_port():
     return port
 
 def start_socat(port):
-    """启动 socat，将本地 HTTP 代理转发到 SOCKS5"""
     socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
     if SOCKS5_USER and SOCKS5_PASS:
         socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socks5user={SOCKS5_USER},socks5pass={SOCKS5_PASS}"
@@ -64,7 +69,6 @@ def start_socat(port):
     return proc
 
 def clear_docker_cache():
-    """强制清理所有 Docker 缓存"""
     print("🧹 正在清理 Docker 缓存...")
     try:
         subprocess.run(["docker", "stop", "$(docker ps -aq)"], shell=True, check=False)
@@ -75,8 +79,31 @@ def clear_docker_cache():
     except Exception as e:
         print(f"⚠️ 清理缓存时出错: {e}")
 
+def test_proxy_ip(port):
+    """通过 HTTP 代理查询出口 IP 并检查是否为中国大陆"""
+    proxy_url = f"http://127.0.0.1:{port}"
+    proxies = {"http": proxy_url, "https": proxy_url}
+    try:
+        # 使用 ip-api.com 获取 IP 和归属地（免费，无需key）
+        response = requests.get("http://ip-api.com/json/", proxies=proxies, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            ip = data.get('query', 'unknown')
+            country = data.get('country', 'unknown')
+            print(f"🌐 代理出口 IP: {ip}, 国家: {country}")
+            if country.lower() != 'china':
+                print("❌ 代理出口 IP 不是中国大陆，无法访问限制国内 IP 的镜像站，终止测试。")
+                sys.exit(1)
+            else:
+                print("✅ 代理出口 IP 为中国大陆，继续测试。")
+        else:
+            print(f"⚠️ 获取出口 IP 失败，状态码: {response.status_code}")
+            sys.exit(1)
+    except Exception as e:
+        print(f"⚠️ 无法通过代理获取出口 IP: {e}")
+        sys.exit(1)
+
 def pull_image(mirror: str, proxy_port: int) -> tuple:
-    """通过 HTTP 代理拉取镜像，实时打印 Docker 输出"""
     registry = mirror.replace("https://", "").replace("http://", "")
     if "/" in TEST_IMAGE:
         full_image = f"{registry}/{TEST_IMAGE}"
@@ -92,11 +119,10 @@ def pull_image(mirror: str, proxy_port: int) -> tuple:
     print(f"📥 执行: {' '.join(cmd)}")
     start = time.time()
     try:
-        # stdout 实时打印，stderr 捕获用于错误信息
         proc = subprocess.run(
             cmd,
-            stdout=None,            # 输出到控制台（实时显示）
-            stderr=subprocess.PIPE, # 捕获错误信息
+            stdout=None,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=TIMEOUT,
             env=env,
@@ -114,12 +140,16 @@ def pull_image(mirror: str, proxy_port: int) -> tuple:
     except Exception as e:
         return mirror, 0, False, f"异常: {str(e)[:50]}"
 
+def get_beijing_time():
+    return time.strftime('%Y-%m-%d %H:%M:%S')
+
 def main():
     print("=" * 70)
     print("🐳 Docker 镜像加速器速度测试（强制清理缓存 + 实时日志）")
     print(f"测试镜像: {TEST_IMAGE}")
     print(f"镜像站数量: {len(MIRRORS)}")
     print(f"代理出口: {SOCKS5_HOST}:{SOCKS5_PORT}")
+    print(f"当前时间（北京时间）: {get_beijing_time()}")
     print("=" * 70)
 
     # 确保 socat 已安装
@@ -130,19 +160,23 @@ def main():
         subprocess.run(["sudo", "apt-get", "update"], check=True)
         subprocess.run(["sudo", "apt-get", "install", "-y", "socat"], check=True)
 
-    # 首次清理缓存
-    clear_docker_cache()
-
     # 启动 socat
     port = find_free_port()
     socat_proc = start_socat(port)
     print(f"✅ socat 已启动，监听 127.0.0.1:{port}")
+
+    # ========== 关键检测：检查代理出口 IP 是否为中国大陆 ==========
+    test_proxy_ip(port)
+
+    # 首次清理缓存
+    clear_docker_cache()
 
     results = []
     try:
         for idx, mirror in enumerate(MIRRORS, 1):
             print("\n" + "=" * 70)
             print(f"🔄 [{idx}/{len(MIRRORS)}] 测试镜像站: {mirror}")
+            print(f"⏰ 开始时间: {get_beijing_time()}")
             print("=" * 70)
             
             url, elapsed, success, msg = pull_image(mirror, port)
@@ -150,21 +184,18 @@ def main():
             status_icon = "✅" if success else "❌"
             print(f"{status_icon} 完成: {url:<45} - 耗时 {elapsed:.2f}s - {msg}")
             
-            # 每个镜像测试后清理缓存（避免缓存影响下一个）
             if idx < len(MIRRORS):
                 clear_docker_cache()
     finally:
         socat_proc.terminate()
         socat_proc.wait()
 
-    # 排序
     results.sort(key=lambda x: (not x[2], x[1] if x[2] else float('inf')))
 
-    # 生成结果文件
     with open("docker_mirror_results.txt", "w", encoding="utf-8") as f:
         f.write("Docker 镜像加速器测速结果（强制清理缓存）\n")
         f.write(f"测试镜像: {TEST_IMAGE}\n")
-        f.write(f"测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"测试时间（北京时间）: {get_beijing_time()}\n")
         f.write("=" * 70 + "\n")
         f.write("排名 | 镜像站 | 耗时 | 状态\n")
         f.write("-" * 70 + "\n")
@@ -183,8 +214,8 @@ def main():
     print("\n" + "-" * 70)
     print(f"✅ 测试完成！成功 {success_count} 个，失败 {len(MIRRORS)-success_count} 个")
     print(f"📄 结果已保存至 docker_mirror_results.txt")
+    print(f"⏰ 完成时间（北京时间）: {get_beijing_time()}")
 
-    # 提取最快的三个
     fast_three = []
     for url, elapsed, success, _ in results:
         if success:
