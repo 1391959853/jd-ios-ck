@@ -34,7 +34,7 @@ PROXY_LIST = [
     "https://gh-proxy.com/",          # 主站
     "https://gh.404cafe.fun/",        # 2026 新增
     "https://ghfast.top/",
-    "https://ghproxy.cc/"
+    "https://ghproxy.cc/",
     # 你可以继续添加更多
 ]
 
