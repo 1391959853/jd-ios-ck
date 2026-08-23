@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.31
+#   版本：9.32
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -454,17 +454,17 @@ build_socks5_image() {
         x86_64)
             frp_arch="amd64"
             gost_arch="amd64"
-            apt_source='RUN printf "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse\n" > /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" /etc/apt/sources.list'
             ;;
         aarch64|arm64)
             frp_arch="arm64"
             gost_arch="arm64"
-            apt_source='RUN printf "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse\n" > /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         armv7l|armv8l)
             frp_arch="arm"
             gost_arch="armv7"
-            apt_source='RUN printf "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse\n" > /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         *)
             log_error "不支持的架构: $arch"
@@ -473,7 +473,7 @@ build_socks5_image() {
     esac
 
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
-    log_info "构建 SOCKS5 镜像（gost + frp）使用 Ubuntu 源"
+    log_info "构建 SOCKS5 镜像（gost + frp）"
 
     local tmpd=$(mktemp -d)
     cd "$tmpd"
