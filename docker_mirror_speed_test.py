@@ -57,17 +57,25 @@ def find_free_port():
     return port
 
 def start_socat(port):
-    """启动 socat，将本地 HTTP 代理转发到 SOCKS5"""
-    socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
+    """启动 socat，将本地 HTTP 代理转发到 SOCKS5（使用正确的认证选项）"""
+    # 正确的选项名：socksuser 和 sockspass（不是 socks5user）
     if SOCKS5_USER and SOCKS5_PASS:
-        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socks5user={SOCKS5_USER},socks5pass={SOCKS5_PASS}"
+        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socksuser={SOCKS5_USER},sockspass={SOCKS5_PASS}"
+    else:
+        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
     cmd = [
         "socat",
         f"TCP4-LISTEN:{port},fork,reuseaddr",
         socks5_url
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=None)
+    # 不将 stderr 重定向，以便检测启动失败
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     time.sleep(2)
+    # 检查进程是否还活着
+    if proc.poll() is not None:
+        _, err = proc.communicate()
+        print(f"❌ socat 启动失败: {err.decode().strip()}")
+        sys.exit(1)
     return proc
 
 def clear_docker_cache():
