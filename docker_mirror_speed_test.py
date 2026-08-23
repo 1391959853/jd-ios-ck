@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Docker 镜像加速器速度测试（强制清理缓存，实时打印日志，北京时间，IP归属检测）
-如果代理出口 IP 非中国大陆，则立即退出。
+如果代理出口 IP 非中国大陆，则立即退出，并明确区分失败原因。
 """
 
 import subprocess
@@ -44,11 +44,12 @@ TIMEOUT = 600  # 每个镜像拉取超时（秒）
 # ========== 🔧 请在这里修改为您的真实代理账密 ==========
 SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
 SOCKS5_PORT = os.getenv("SOCKS5_PORT", "6005")
-SOCKS5_USER = os.getenv("SOCKS5_USER", "socksuser")   # 请替换
-SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")     # 请替换
+SOCKS5_USER = os.getenv("SOCKS5_USER", "你的用户名")   # 请替换
+SOCKS5_PASS = os.getenv("SOCKS5_PASS", "你的密码")     # 请替换
 # ======================================================
 
 def find_free_port():
+    """找一个空闲端口"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(('127.0.0.1', 0))
     port = s.getsockname()[1]
@@ -56,6 +57,7 @@ def find_free_port():
     return port
 
 def start_socat(port):
+    """启动 socat，将本地 HTTP 代理转发到 SOCKS5"""
     socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
     if SOCKS5_USER and SOCKS5_PASS:
         socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socks5user={SOCKS5_USER},socks5pass={SOCKS5_PASS}"
@@ -64,11 +66,12 @@ def start_socat(port):
         f"TCP4-LISTEN:{port},fork,reuseaddr",
         socks5_url
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=None)
     time.sleep(2)
     return proc
 
 def clear_docker_cache():
+    """强制清理所有 Docker 缓存"""
     print("🧹 正在清理 Docker 缓存...")
     try:
         subprocess.run(["docker", "stop", "$(docker ps -aq)"], shell=True, check=False)
@@ -80,30 +83,77 @@ def clear_docker_cache():
         print(f"⚠️ 清理缓存时出错: {e}")
 
 def test_proxy_ip(port):
-    """通过 HTTP 代理查询出口 IP 并检查是否为中国大陆"""
+    """
+    通过 HTTP 代理查询出口 IP 并检查是否为中国大陆，详细区分失败原因
+    """
     proxy_url = f"http://127.0.0.1:{port}"
     proxies = {"http": proxy_url, "https": proxy_url}
+
+    # 1. 先尝试通过国内网站 myip.ipip.net 获取出口 IP（纯文本，简单可靠）
     try:
-        # 使用 ip-api.com 获取 IP 和归属地（免费，无需key）
-        response = requests.get("http://ip-api.com/json/", proxies=proxies, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            ip = data.get('query', 'unknown')
-            country = data.get('country', 'unknown')
-            print(f"🌐 代理出口 IP: {ip}, 国家: {country}")
-            if country.lower() != 'china':
-                print("❌ 代理出口 IP 不是中国大陆，无法访问限制国内 IP 的镜像站，终止测试。")
+        cmd = ["curl", "-x", proxy_url, "-s", "http://myip.ipip.net"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and result.stdout.strip():
+            ip = result.stdout.strip()
+            print(f"🌐 代理出口 IP: {ip}")
+            # 2. 查询该 IP 的归属地
+            try:
+                resp = requests.get(
+                    f"http://ip-api.com/json/{ip}?fields=country",
+                    proxies=proxies,
+                    timeout=10
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    country = data.get('country', 'unknown')
+                    print(f"🌍 归属地: {country}")
+                    if country.lower() == 'china':
+                        print("✅ 代理出口 IP 为中国大陆，继续测试。")
+                        return
+                    else:
+                        print(f"❌ 代理出口 IP 归属地为 {country}，非中国大陆，终止测试。")
+                        sys.exit(1)
+                else:
+                    print("⚠️ 查询归属地接口返回状态码异常，无法确定归属地，终止测试。")
+                    sys.exit(1)
+            except Exception as e:
+                print(f"⚠️ 查询归属地失败: {e}，无法确定代理 IP 归属地，终止测试。")
                 sys.exit(1)
-            else:
-                print("✅ 代理出口 IP 为中国大陆，继续测试。")
         else:
-            print(f"⚠️ 获取出口 IP 失败，状态码: {response.status_code}")
-            sys.exit(1)
+            print("⚠️ 通过 myip.ipip.net 获取 IP 失败（代理可能无法访问该网站），尝试其他接口...")
     except Exception as e:
-        print(f"⚠️ 无法通过代理获取出口 IP: {e}")
-        sys.exit(1)
+        print(f"⚠️ curl 执行异常: {e}，尝试其他接口...")
+
+    # 备选方案：使用其他接口（如 ip-api.com 直接返回国家）
+    apis = [
+        ("https://ip.useragentinfo.com/json", "ip", "country"),
+        ("http://ip-api.com/json/", "query", "country"),
+    ]
+    for api_url, ip_key, country_key in apis:
+        try:
+            response = requests.get(api_url, proxies=proxies, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                ip = data.get(ip_key, 'unknown')
+                country = data.get(country_key, 'unknown')
+                print(f"🌐 代理出口 IP: {ip}, 国家: {country}")
+                if country.lower() != 'china':
+                    print(f"❌ 代理出口 IP 归属地为 {country}，非中国大陆，终止测试。")
+                    sys.exit(1)
+                else:
+                    print("✅ 代理出口 IP 为中国大陆，继续测试。")
+                    return
+            else:
+                print(f"⚠️ 接口 {api_url} 返回状态码 {response.status_code}，尝试下一个...")
+        except Exception as e:
+            print(f"⚠️ 接口 {api_url} 请求失败: {e}，尝试下一个...")
+
+    # 所有方法均失败
+    print("❌ 所有 IP 查询方式均失败，代理可能无法访问外网或配置错误，终止测试。")
+    sys.exit(1)
 
 def pull_image(mirror: str, proxy_port: int) -> tuple:
+    """通过 HTTP 代理拉取镜像，实时打印 Docker 输出"""
     registry = mirror.replace("https://", "").replace("http://", "")
     if "/" in TEST_IMAGE:
         full_image = f"{registry}/{TEST_IMAGE}"
@@ -190,8 +240,10 @@ def main():
         socat_proc.terminate()
         socat_proc.wait()
 
+    # 排序
     results.sort(key=lambda x: (not x[2], x[1] if x[2] else float('inf')))
 
+    # 生成结果文件
     with open("docker_mirror_results.txt", "w", encoding="utf-8") as f:
         f.write("Docker 镜像加速器测速结果（强制清理缓存）\n")
         f.write(f"测试镜像: {TEST_IMAGE}\n")
@@ -216,6 +268,7 @@ def main():
     print(f"📄 结果已保存至 docker_mirror_results.txt")
     print(f"⏰ 完成时间（北京时间）: {get_beijing_time()}")
 
+    # 提取最快的三个
     fast_three = []
     for url, elapsed, success, _ in results:
         if success:
