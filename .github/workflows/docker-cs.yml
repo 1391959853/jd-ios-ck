@@ -20,6 +20,9 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Install Python dependencies
+        run: pip install requests   # 新增：安装 requests
+
       - name: Run Docker mirror speed test
         run: python3 docker_mirror_speed_test.py
 
