@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-Docker 镜像加速器速度测试（强制清理缓存，实时打印日志，北京时间，IP归属检测）
-如果代理出口 IP 非中国大陆，则立即退出，并明确区分失败原因。
+Docker 镜像加速器速度测试（使用 proxychains4 强制代理）
+硬编码 SOCKS5 账号密码，通过 proxychains4 执行所有需要代理的命令。
 """
 
 import subprocess
 import time
 import os
 import json
-import socket
 import sys
-import requests
+import tempfile
 
 # ========== 设置时区为北京时间 ==========
 os.environ['TZ'] = 'Asia/Shanghai'
 time.tzset()
-# ======================================
+# =========================================
 
 # ---------- 镜像站列表 ----------
 MIRRORS = [
@@ -41,219 +40,185 @@ MIRRORS = [
 TEST_IMAGE = "hdbjlizhe/autman:latest"
 TIMEOUT = 600  # 每个镜像拉取超时（秒）
 
-# ========== 🔧 请在这里修改为您的真实代理账密 ==========
-SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
-SOCKS5_PORT = os.getenv("SOCKS5_PORT", "6005")
-SOCKS5_USER = os.getenv("SOCKS5_USER", "你的用户名")   # 请替换
-SOCKS5_PASS = os.getenv("SOCKS5_PASS", "你的密码")     # 请替换
-# ======================================================
+# ========== 🔧 硬编码 SOCKS5 代理账号密码 ==========
+SOCKS5_HOST = "1.sggg3326.top"
+SOCKS5_PORT = "6005"
+SOCKS5_USER = "你的用户名"   # 请替换为真实值
+SOCKS5_PASS = "你的密码"     # 请替换为真实值
+# =================================================
 
-def find_free_port():
-    """找一个空闲端口"""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('127.0.0.1', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+PROXYCHAINS_CONF_TEMPLATE = """strict_chain
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
 
-def start_socat(port):
-    """启动 socat，将本地 HTTP 代理转发到 SOCKS5（使用正确的认证选项）"""
-    # 正确的选项名：socksuser 和 sockspass（不是 socks5user）
-    if SOCKS5_USER and SOCKS5_PASS:
-        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socksuser={SOCKS5_USER},sockspass={SOCKS5_PASS}"
+[ProxyList]
+socks5 {host} {port} {user} {pass}
+"""
+
+def install_proxychains():
+    """确保 proxychains4 已安装"""
+    try:
+        subprocess.run(["proxychains4", "-h"], capture_output=True, check=True)
+    except:
+        print("⚠️ proxychains4 未安装，正在安装...")
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "-y", "proxychains4"], check=True)
+
+def create_proxychains_conf():
+    """生成 proxychains 配置文件，返回文件路径"""
+    conf_content = PROXYCHAINS_CONF_TEMPLATE.format(
+        host=SOCKS5_HOST,
+        port=SOCKS5_PORT,
+        user=SOCKS5_USER,
+        pass=SOCKS5_PASS
+    )
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as f:
+        f.write(conf_content)
+        return f.name
+
+def run_with_proxy(cmd, conf_path, timeout=None):
+    """通过 proxychains4 执行命令，返回 (返回码, stdout, stderr)"""
+    full_cmd = ["proxychains4", "-f", conf_path] + cmd
+    try:
+        proc = subprocess.run(
+            full_cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except subprocess.TimeoutExpired:
+        return -1, "", "timeout"
+
+def check_proxy(conf_path):
+    """预检代理是否可用（通过 httpbin.org/ip）"""
+    print("🔍 预检 SOCKS5 代理...")
+    cmd = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "https://httpbin.org/ip"]
+    ret, out, err = run_with_proxy(cmd, conf_path, timeout=10)
+    if ret == 0 and out == "200":
+        print("✅ 代理预检成功")
+        return True
     else:
-        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
-    cmd = [
-        "socat",
-        f"TCP4-LISTEN:{port},fork,reuseaddr",
-        socks5_url
-    ]
-    # 不将 stderr 重定向，以便检测启动失败
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    time.sleep(2)
-    # 检查进程是否还活着
-    if proc.poll() is not None:
-        _, err = proc.communicate()
-        print(f"❌ socat 启动失败: {err.decode().strip()}")
-        sys.exit(1)
-    return proc
+        print(f"❌ 代理预检失败 (返回码: {ret}, 输出: {out}, 错误: {err})")
+        return False
+
+def get_proxy_ip(conf_path):
+    """通过代理获取出口 IP（使用 myip.ipip.net）"""
+    cmd = ["curl", "-s", "http://myip.ipip.net"]
+    ret, out, err = run_with_proxy(cmd, conf_path, timeout=10)
+    if ret == 0 and out:
+        return out.strip()
+    else:
+        print(f"⚠️ 获取出口 IP 失败: {err}")
+        return None
+
+def get_ip_country(ip, conf_path):
+    """查询 IP 归属地（通过 ip-api.com）"""
+    cmd = ["curl", "-s", f"http://ip-api.com/json/{ip}?fields=country"]
+    ret, out, err = run_with_proxy(cmd, conf_path, timeout=10)
+    if ret == 0 and out:
+        try:
+            data = json.loads(out)
+            return data.get('country', 'unknown')
+        except:
+            pass
+    return None
 
 def clear_docker_cache():
-    """强制清理所有 Docker 缓存"""
-    print("🧹 正在清理 Docker 缓存...")
-    try:
-        subprocess.run(["docker", "stop", "$(docker ps -aq)"], shell=True, check=False)
-        subprocess.run(["docker", "system", "prune", "-a", "-f"], check=True)
-        subprocess.run(["docker", "volume", "prune", "-f"], check=True)
-        subprocess.run(["docker", "builder", "prune", "-a", "-f"], check=True)
-        print("✅ Docker 缓存已清空")
-    except Exception as e:
-        print(f"⚠️ 清理缓存时出错: {e}")
+    """清理 Docker 缓存（无需代理）"""
+    print("🧹 清理 Docker 缓存...")
+    subprocess.run(["docker", "system", "prune", "-a", "-f"], check=False)
+    subprocess.run(["docker", "volume", "prune", "-f"], check=False)
+    subprocess.run(["docker", "builder", "prune", "-a", "-f"], check=False)
 
-def test_proxy_ip(port):
-    """
-    通过 HTTP 代理查询出口 IP 并检查是否为中国大陆，详细区分失败原因
-    """
-    proxy_url = f"http://127.0.0.1:{port}"
-    proxies = {"http": proxy_url, "https": proxy_url}
-
-    # 1. 先尝试通过国内网站 myip.ipip.net 获取出口 IP（纯文本，简单可靠）
-    try:
-        cmd = ["curl", "-x", proxy_url, "-s", "http://myip.ipip.net"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        if result.returncode == 0 and result.stdout.strip():
-            ip = result.stdout.strip()
-            print(f"🌐 代理出口 IP: {ip}")
-            # 2. 查询该 IP 的归属地
-            try:
-                resp = requests.get(
-                    f"http://ip-api.com/json/{ip}?fields=country",
-                    proxies=proxies,
-                    timeout=10
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    country = data.get('country', 'unknown')
-                    print(f"🌍 归属地: {country}")
-                    if country.lower() == 'china':
-                        print("✅ 代理出口 IP 为中国大陆，继续测试。")
-                        return
-                    else:
-                        print(f"❌ 代理出口 IP 归属地为 {country}，非中国大陆，终止测试。")
-                        sys.exit(1)
-                else:
-                    print("⚠️ 查询归属地接口返回状态码异常，无法确定归属地，终止测试。")
-                    sys.exit(1)
-            except Exception as e:
-                print(f"⚠️ 查询归属地失败: {e}，无法确定代理 IP 归属地，终止测试。")
-                sys.exit(1)
-        else:
-            print("⚠️ 通过 myip.ipip.net 获取 IP 失败（代理可能无法访问该网站），尝试其他接口...")
-    except Exception as e:
-        print(f"⚠️ curl 执行异常: {e}，尝试其他接口...")
-
-    # 备选方案：使用其他接口（如 ip-api.com 直接返回国家）
-    apis = [
-        ("https://ip.useragentinfo.com/json", "ip", "country"),
-        ("http://ip-api.com/json/", "query", "country"),
-    ]
-    for api_url, ip_key, country_key in apis:
-        try:
-            response = requests.get(api_url, proxies=proxies, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                ip = data.get(ip_key, 'unknown')
-                country = data.get(country_key, 'unknown')
-                print(f"🌐 代理出口 IP: {ip}, 国家: {country}")
-                if country.lower() != 'china':
-                    print(f"❌ 代理出口 IP 归属地为 {country}，非中国大陆，终止测试。")
-                    sys.exit(1)
-                else:
-                    print("✅ 代理出口 IP 为中国大陆，继续测试。")
-                    return
-            else:
-                print(f"⚠️ 接口 {api_url} 返回状态码 {response.status_code}，尝试下一个...")
-        except Exception as e:
-            print(f"⚠️ 接口 {api_url} 请求失败: {e}，尝试下一个...")
-
-    # 所有方法均失败
-    print("❌ 所有 IP 查询方式均失败，代理可能无法访问外网或配置错误，终止测试。")
-    sys.exit(1)
-
-def pull_image(mirror: str, proxy_port: int) -> tuple:
-    """通过 HTTP 代理拉取镜像，实时打印 Docker 输出"""
+def pull_image(mirror, conf_path):
+    """通过代理拉取镜像"""
     registry = mirror.replace("https://", "").replace("http://", "")
     if "/" in TEST_IMAGE:
         full_image = f"{registry}/{TEST_IMAGE}"
     else:
         full_image = f"{registry}/library/{TEST_IMAGE}"
     
-    env = os.environ.copy()
-    env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    env["NO_PROXY"] = "localhost,127.0.0.1"
     cmd = ["docker", "pull", full_image]
-    
-    print(f"📥 执行: {' '.join(cmd)}")
+    print(f"📥 拉取: {full_image}")
     start = time.time()
-    try:
-        proc = subprocess.run(
-            cmd,
-            stdout=None,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=TIMEOUT,
-            env=env,
-            check=False
-        )
-        elapsed = time.time() - start
-        if proc.returncode == 0:
-            return mirror, elapsed, True, "成功"
-        else:
-            err = proc.stderr.strip()[:200] if proc.stderr else "未知错误"
-            return mirror, elapsed, False, f"拉取失败: {err}"
-    except subprocess.TimeoutExpired:
-        print("⏰ 拉取超时")
-        return mirror, TIMEOUT, False, "超时"
-    except Exception as e:
-        return mirror, 0, False, f"异常: {str(e)[:50]}"
+    ret, out, err = run_with_proxy(cmd, conf_path, timeout=TIMEOUT)
+    elapsed = time.time() - start
+    
+    if ret == 0:
+        return mirror, elapsed, True, "成功"
+    else:
+        err_msg = err[:200] if err else "未知错误"
+        return mirror, elapsed, False, f"拉取失败: {err_msg}"
 
 def get_beijing_time():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 def main():
     print("=" * 70)
-    print("🐳 Docker 镜像加速器速度测试（强制清理缓存 + 实时日志）")
+    print("🐳 Docker 镜像加速器速度测试 (proxychains4 + SOCKS5)")
     print(f"测试镜像: {TEST_IMAGE}")
     print(f"镜像站数量: {len(MIRRORS)}")
     print(f"代理出口: {SOCKS5_HOST}:{SOCKS5_PORT}")
     print(f"当前时间（北京时间）: {get_beijing_time()}")
     print("=" * 70)
 
-    # 确保 socat 已安装
-    try:
-        subprocess.run(["socat", "-V"], capture_output=True, check=True)
-    except:
-        print("⚠️ socat 未安装，正在安装...")
-        subprocess.run(["sudo", "apt-get", "update"], check=True)
-        subprocess.run(["sudo", "apt-get", "install", "-y", "socat"], check=True)
+    # 安装 proxychains4
+    install_proxychains()
 
-    # 启动 socat
-    port = find_free_port()
-    socat_proc = start_socat(port)
-    print(f"✅ socat 已启动，监听 127.0.0.1:{port}")
+    # 创建临时配置文件
+    conf_path = create_proxychains_conf()
+    print(f"📄 使用 proxychains 配置文件: {conf_path}")
 
-    # ========== 关键检测：检查代理出口 IP 是否为中国大陆 ==========
-    test_proxy_ip(port)
+    # 预检代理
+    if not check_proxy(conf_path):
+        print("❌ 代理不可用，终止测试")
+        sys.exit(1)
 
-    # 首次清理缓存
+    # 获取出口 IP 并检查归属地
+    ip = get_proxy_ip(conf_path)
+    if ip:
+        print(f"🌐 代理出口 IP: {ip}")
+        country = get_ip_country(ip, conf_path)
+        if country:
+            print(f"🌍 归属地: {country}")
+            if country.lower() != 'china':
+                print("❌ 出口 IP 非中国大陆，终止测试")
+                sys.exit(1)
+            else:
+                print("✅ 出口 IP 为中国大陆，继续测试")
+        else:
+            print("⚠️ 无法查询归属地，但代理预检通过，继续测试")
+    else:
+        print("⚠️ 无法获取出口 IP，但代理预检通过，继续测试")
+
+    # 清理 Docker 缓存
     clear_docker_cache()
 
     results = []
-    try:
-        for idx, mirror in enumerate(MIRRORS, 1):
-            print("\n" + "=" * 70)
-            print(f"🔄 [{idx}/{len(MIRRORS)}] 测试镜像站: {mirror}")
-            print(f"⏰ 开始时间: {get_beijing_time()}")
-            print("=" * 70)
-            
-            url, elapsed, success, msg = pull_image(mirror, port)
-            results.append((url, elapsed, success, msg))
-            status_icon = "✅" if success else "❌"
-            print(f"{status_icon} 完成: {url:<45} - 耗时 {elapsed:.2f}s - {msg}")
-            
-            if idx < len(MIRRORS):
-                clear_docker_cache()
-    finally:
-        socat_proc.terminate()
-        socat_proc.wait()
+    for idx, mirror in enumerate(MIRRORS, 1):
+        print("\n" + "=" * 70)
+        print(f"🔄 [{idx}/{len(MIRRORS)}] 测试镜像站: {mirror}")
+        print(f"⏰ 开始时间: {get_beijing_time()}")
+        print("=" * 70)
+        
+        url, elapsed, success, msg = pull_image(mirror, conf_path)
+        results.append((url, elapsed, success, msg))
+        status_icon = "✅" if success else "❌"
+        print(f"{status_icon} 完成: {url:<45} - 耗时 {elapsed:.2f}s - {msg}")
+        
+        # 每个镜像测试后清理缓存（避免缓存影响下一个）
+        if idx < len(MIRRORS):
+            clear_docker_cache()
 
     # 排序
     results.sort(key=lambda x: (not x[2], x[1] if x[2] else float('inf')))
 
     # 生成结果文件
     with open("docker_mirror_results.txt", "w", encoding="utf-8") as f:
-        f.write("Docker 镜像加速器测速结果（强制清理缓存）\n")
+        f.write("Docker 镜像加速器测速结果（proxychains4 + SOCKS5）\n")
         f.write(f"测试镜像: {TEST_IMAGE}\n")
         f.write(f"测试时间（北京时间）: {get_beijing_time()}\n")
         f.write("=" * 70 + "\n")
@@ -294,12 +259,11 @@ def main():
     else:
         print("⚠️ 没有可用镜像，不生成配置文件")
 
-    for url, elapsed, success, _ in results:
-        if success:
-            print(f"\n🏆 最快的镜像站: {url} (耗时 {elapsed:.2f}s)")
-            break
-    else:
-        print("\n⚠️  没有找到可用的镜像站")
+    # 删除临时配置文件
+    try:
+        os.unlink(conf_path)
+    except:
+        pass
 
 if __name__ == "__main__":
     exit(main())
