@@ -28,8 +28,8 @@ jobs:
           SOCKS5_HOST: ${{ github.event.inputs.socks_host || '1.sggg3326.top' }}
           SOCKS5_PORT: ${{ github.event.inputs.socks_port || '6005' }}
           # 以下两行可以保留，但脚本硬编码优先，可忽略
-          SOCKS5_USER: "dummy"
-          SOCKS5_PASS: "dummy"
+          SOCKS5_USER: "socksuser"
+          SOCKS5_PASS: "sockspass123"
         run: python3 docker_mirror_speed_test.py
 
       - name: Upload results as artifact
