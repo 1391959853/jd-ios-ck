@@ -1,0 +1,7 @@
+{
+  "registry-mirrors": [
+    "https://dockerproxy.net",
+    "https://docker-registry.nmqu.com",
+    "https://hub1.nat.tf"
+  ]
+}

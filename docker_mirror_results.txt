@@ -1,24 +1,24 @@
 Docker 镜像加速器测速结果
-测试镜像: ubuntu:22.04
-测试时间: 2026-08-23 17:22:24
+测试镜像: hdbjlizhe/autman:latest
+测试时间: 2026-08-23 17:33:42
 ======================================================================
 排名 | 镜像站 | 耗时 | 状态
 ----------------------------------------------------------------------
-   1 | https://docker-registry.nmqu.com | 0.70s | 成功
-   2 | https://dockerproxy.net | 0.95s | 成功
-   3 | https://hub1.nat.tf | 1.27s | 成功
-   4 | https://dockerproxy.cool | 1.90s | 成功
-   5 | https://docker.m.daocloud.io | 2.91s | 成功
-   6 | https://hub.1panel.dev | 3.41s | 成功
-   7 | https://hub.rat.dev | 5.26s | 成功
-   8 | https://docker.sparkcr.cn | 29.32s | 成功
+   1 | https://dockerproxy.net | 0.72s | 成功
+   2 | https://docker-registry.nmqu.com | 0.74s | 成功
+   3 | https://hub1.nat.tf | 1.41s | 成功
+   4 | https://hub.1panel.dev | 2.61s | 成功
+   5 | https://dockerproxy.cool | 2.80s | 成功
+   6 | https://docker.m.daocloud.io | 2.90s | 成功
+   7 | https://hub.rat.dev | 2.95s | 成功
+   8 | https://docker.sparkcr.cn | 204.70s | 成功
      | https://mirror.ccs.tencentyun.com | 失败 | 拉取失败: Error response from daemon: Get "https://mirror.ccs.tencentyun.com/v2/": dial tcp: lookup mirror.ccs
      | https://docker.1ms.run | 失败 | 拉取失败: error pulling image configuration: download failed after attempts=1: denied: <!DOCTYPE html><html la
-     | https://docker.1panel.live | 失败 | 拉取失败: Error response from daemon: pull access denied for docker.1panel.live/library/ubuntu, repository doe
-     | https://docker.xuanyuan.run | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.run/v2/library/ubuntu/manifests/22.04": un
-     | https://docker.xuanyuan.dev | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.dev/v2/library/ubuntu/manifests/22.04": un
-     | https://docker.hlmirror.com | 失败 | 拉取失败: Error response from daemon: Head "https://mirror.houlang.cloud/v2/library/ubuntu/manifests/22.04": u
-     | https://hub4.nat.tf | 失败 | 拉取失败: Error response from daemon: manifest for hub4.nat.tf/library/ubuntu:22.04 not found: manifest unknow
+     | https://docker.1panel.live | 失败 | 拉取失败: Error response from daemon: pull access denied for docker.1panel.live/hdbjlizhe/autman, repository d
+     | https://docker.xuanyuan.run | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.run/v2/hdbjlizhe/autman/manifests/latest":
+     | https://docker.xuanyuan.dev | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.dev/v2/hdbjlizhe/autman/manifests/latest":
+     | https://docker.hlmirror.com | 失败 | 拉取失败: Error response from daemon: Head "https://mirror.houlang.cloud/v2/hdbjlizhe/autman/manifests/latest"
+     | https://hub4.nat.tf | 失败 | 拉取失败: Error response from daemon: manifest for hub4.nat.tf/hdbjlizhe/autman:latest not found: manifest unk
      | https://docker.367231.xyz | 失败 | 拉取失败: Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. 
      | https://docker.fnnas.com | 失败 | 拉取失败: Error response from daemon: unauthorized: <html>
 <head><title>401 Authorization Required</title></he
