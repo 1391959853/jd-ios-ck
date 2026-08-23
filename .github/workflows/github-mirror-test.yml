@@ -1,0 +1,51 @@
+name: GitHub Mirror Speed Test (SOCKS5)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 每天北京时间 10:00
+  workflow_dispatch:
+    inputs:
+      socks_host:
+        description: 'SOCKS5 代理主机'
+        required: true
+        default: '1.sggg3326.top'
+      socks_port:
+        description: 'SOCKS5 代理端口'
+        required: true
+        default: '6005'
+
+jobs:
+  speed-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        pip install requests requests[socks] PySocks
+
+    - name: Run speed test (with SOCKS5)
+      env:
+        SOCKS5_HOST: ${{ github.event.inputs.socks_host || '1.sggg3326.top' }}
+        SOCKS5_PORT: ${{ github.event.inputs.socks_port || '6005' }}
+        SOCKS5_USER: ${{ secrets.SOCKS5_USER }}
+        SOCKS5_PASS: ${{ secrets.SOCKS5_PASS }}
+      run: |
+        python3 github_mirror_speed_test.py
+      
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: speed-test-results
+        path: speed_test_results.txt
+    
+    - name: Show best mirror
+      run: |
+        echo "🏆 测试完成！查看下方 Artifacts 下载结果文件"
