@@ -2,7 +2,7 @@ name: github前缀代理测试
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 每天北京时间 10:00
+    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       socks_host:
@@ -17,12 +17,10 @@ on:
 jobs:
   speed-test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ========== 测试代理连通性（硬编码账号密码） ==========
       - name: 测试代理连通性
         run: |
           curl -x socks5h://socksuser:sockspass123@${{ github.event.inputs.socks_host || '1.sggg3326.top' }}:${{ github.event.inputs.socks_port || '6005' }} \
@@ -41,8 +39,6 @@ jobs:
         env:
           SOCKS5_HOST: ${{ github.event.inputs.socks_host || '1.sggg3326.top' }}
           SOCKS5_PORT: ${{ github.event.inputs.socks_port || '6005' }}
-          # 注意：这里不再使用 Secrets，而是直接硬编码（但为了兼容，也设置环境变量，
-          # 如果 Python 脚本中硬编码了默认值，环境变量可有可无）
         run: |
           python3 github_mirror_speed_test.py
 
@@ -52,6 +48,15 @@ jobs:
           name: speed-test-results
           path: speed_test_results.txt
 
+      # ========== 新增：提交结果到仓库根目录 ==========
+      - name: 提交结果到仓库（覆盖）
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add speed_test_results.txt
+          git diff --cached --quiet || git commit -m "更新测速结果 [skip ci]"
+          git push origin X
+
       - name: Show best mirror
         run: |
-          echo "🏆 测试完成！查看下方 Artifacts 下载结果文件"
+          echo "🏆 测试完成！查看仓库根目录的 speed_test_results.txt"
