@@ -1,0 +1,49 @@
+name: Docker Mirror Speed Test
+
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 每天北京时间 11:00
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install proxychains4
+        run: sudo apt-get update && sudo apt-get install -y proxychains4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run Docker mirror speed test (via SOCKS5)
+        env:
+          SOCKS5_HOST: ${{ github.event.inputs.socks_host || '1.sggg3326.top' }}
+          SOCKS5_PORT: ${{ github.event.inputs.socks_port || '6005' }}
+          # 以下两行可以保留，但脚本硬编码优先，可忽略
+          SOCKS5_USER: "dummy"
+          SOCKS5_PASS: "dummy"
+        run: python3 docker_mirror_speed_test.py
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-mirror-results
+          path: |
+            docker_mirror_results.txt
+            docker-daemon.json
+
+      - name: Commit results to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docker_mirror_results.txt docker-daemon.json
+          git diff --cached --quiet || git commit -m "更新Docker镜像测速结果和配置文件 [skip ci]"
+          git push origin main
