@@ -16,6 +16,8 @@
 #         - 针对 armv7/arm64 自动使用 ubuntu-ports 源（阿里云）
 #         - 从外部报告文件获取最快代理，移除内置代理列表和测速逻辑
 #         - 所有 GitHub 下载统一使用该代理
+#         - apt 源替换同时处理 archive 和 security
+#         - gost 查找优化，避免多文件冲突
 #         - 重构：.sources 格式仅替换域名保留路径
 #         - 重构：git clone/pull 增加 3 分钟超时与重试
 #         - 重构：网卡检测仅认可四大运营商公网 IPv6 前缀（240e/2408/2409/240a）
@@ -25,7 +27,7 @@
 #         - 重构：select_deployment_mode 先检测可用网卡，仅一个时自动单网口
 #         - 修复：所有 bc 依赖替换为 awk
 #         - 修复：get_physical_ifaces 同时支持 IPv4/IPv6
-#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名
+#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名，支持变量展开
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -414,7 +416,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 9. 构建 SOCKS5 镜像（仅根据架构决定源） ====================
+# ==================== 9. 构建 SOCKS5 镜像（自适应架构，使用 sed 替换 apt 源） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -430,17 +432,17 @@ build_socks5_image() {
         x86_64)
             frp_arch="amd64"
             gost_arch="amd64"
-            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" /etc/apt/sources.list'
             ;;
         aarch64|arm64)
             frp_arch="arm64"
             gost_arch="arm64"
-            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         armv7l|armv8l)
             frp_arch="arm"
             gost_arch="armv7"
-            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         *)
             log_error "不支持的架构: $arch"
@@ -448,16 +450,21 @@ build_socks5_image() {
             ;;
     esac
 
+    # 确保代理前缀末尾有斜杠
+    if [ -n "$GITHUB_PROXY_PREFIX" ] && [ "${GITHUB_PROXY_PREFIX: -1}" != "/" ]; then
+        GITHUB_PROXY_PREFIX="${GITHUB_PROXY_PREFIX}/"
+    fi
+
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
-    log_info "构建 SOCKS5 镜像（gost + frp）使用 Ubuntu 源"
+    log_info "构建 SOCKS5 镜像（gost + frp）"
 
     local tmpd=$(mktemp -d)
     cd "$tmpd"
 
-    cat > Dockerfile <<'EOF'
+    cat > Dockerfile <<EOF
 FROM ubuntu:22.04
 
-RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list
+$apt_source
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y curl && \
@@ -467,35 +474,35 @@ ARG GITHUB_PROXY_PREFIX
 ARG FRP_ARCH
 ARG GOST_ARCH
 
-ENV GITHUB_PROXY_PREFIX=${GITHUB_PROXY_PREFIX}
-ENV FRP_ARCH=${FRP_ARCH}
-ENV GOST_ARCH=${GOST_ARCH}
-ENV SOCKS_USER=xiaoz
-ENV SOCKS_PASS=a1391959853
-ENV FRP_VERSION=0.70.1
-ENV GOST_VERSION=2.12.0
+ENV GITHUB_PROXY_PREFIX=\${GITHUB_PROXY_PREFIX}
+ENV FRP_ARCH=\${FRP_ARCH}
+ENV GOST_ARCH=\${GOST_ARCH}
+ENV SOCKS_USER=$SOCKS5_USER
+ENV SOCKS_PASS=$SOCKS5_PASS
+ENV FRP_VERSION=$FRP_VERSION
+ENV GOST_VERSION=$GOST_VERSION
 
 # 下载 frpc（优先代理，失败则直连）
-RUN if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
-        (curl -L --fail --retry 5 --retry-delay 5 "$GITHUB_PROXY_PREFIXhttps://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp) || \
-        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp); \
+RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
+        (curl -L --fail --retry 5 --retry-delay 5 "\$GITHUB_PROXY_PREFIXhttps://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp) || \
+        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp); \
     else \
-        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp; \
+        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp; \
     fi && \
     mv /tmp/frp_*/frpc /usr/local/bin/ && \
     chmod +x /usr/local/bin/frpc
 
 # 下载 gost（优先代理，失败则直连）
-RUN if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
-        (curl -L --fail --retry 5 --retry-delay 5 "$GITHUB_PROXY_PREFIXhttps://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp) || \
-        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp); \
+RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
+        (curl -L --fail --retry 5 --retry-delay 5 "\$GITHUB_PROXY_PREFIXhttps://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp) || \
+        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp); \
     else \
-        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp; \
+        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp; \
     fi && \
-    find /tmp -name "gost*" -exec mv {} /usr/local/bin/gost \; && \
+    find /tmp -name "gost*" -type f | head -1 | xargs -I {} mv {} /usr/local/bin/gost && \
     chmod +x /usr/local/bin/gost
 
-RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://${SOCKS_USER}:${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
+RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://\${SOCKS_USER}:\${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
     chmod +x /start.sh
 
 EXPOSE 2233
@@ -1142,7 +1149,6 @@ main() {
 
     if [ "$DEBUG_MODE" = true ]; then
         log_warning "调试模式：将重新部署所有容器（SSH 容器会保留）"
-        # 从报告获取最快代理，若失败则退出
         if ! fetch_fastest_proxy_from_report; then
             log_error "无法获取代理，部署中止"
             exit 1
