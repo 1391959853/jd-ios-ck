@@ -34,10 +34,10 @@ PROXY_LIST = [
 ]  # 👈 这里需要闭合
 
 # 测试文件 (~30MB，先测小文件)
-TEST_FILE_URL = "https://github.com/microsoft/vscode/archive/refs/tags/1.85.0.tar.gz"
+TEST_FILE_URL = "https://github.com/ophub/amlogic-s9xxx-armbian/releases/download/Armbian_resolute_arm64_server_2026.06/Armbian_26.08.0_amlogic_s905d_resolute_6.12.93_server_2026.06.16.img.gz"
 # 备选：https://github.com/git/git/archive/refs/tags/v2.43.0.tar.gz
 
-def test_proxy_download(proxy_base_url, timeout=180):
+def test_proxy_download(proxy_base_url, timeout=600):
     """通过 SOCKS5 代理测试镜像下载速度"""
     proxy_download_url = proxy_base_url + TEST_FILE_URL
     start_time = time.time()
@@ -82,7 +82,7 @@ def main():
     print(f"📦 代理：{SOCKS5_HOST}:{SOCKS5_PORT}")
     print("=" * 70)
     print(f"📦 测试文件：{TEST_FILE_URL}")
-    print(f"⏱️  超时时间：180 秒")
+    print(f"⏱️  超时时间：600 秒")
     print(f"📡 代理节点数量：{len(PROXY_LIST)}")
     print("=" * 70)
     
@@ -129,7 +129,7 @@ def main():
         f.write(f"SOCKS5 代理：{SOCKS5_HOST}:{SOCKS5_PORT}\n")
         f.write(f"测试时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"测试文件：{TEST_FILE_URL}\n")
-        f.write(f"超时时间：180 秒\n")
+        f.write(f"超时时间：600 秒\n")
         f.write("=" * 60 + "\n\n")
         f.write("排名 | 地址 | 耗时 | 大小 | 速度 | 状态\n")
         f.write("-" * 60 + "\n")
