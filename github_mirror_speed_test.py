@@ -9,11 +9,12 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
-# ---------- SOCKS5 代理配置（从环境变量读取） ----------
-SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
-SOCKS5_PORT = int(os.getenv("SOCKS5_PORT", "6005"))
-SOCKS5_USER = os.getenv("SOCKS5_USER", "socksuser")
-SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")
+# ---------- SOCKS5 代理配置（硬编码默认值） ----------
+# 使用 or 确保空字符串时也使用默认值
+SOCKS5_HOST = os.getenv("SOCKS5_HOST") or "1.sggg3326.top"
+SOCKS5_PORT = int(os.getenv("SOCKS5_PORT") or "6005")
+SOCKS5_USER = os.getenv("SOCKS5_USER") or "socksuser"
+SOCKS5_PASS = os.getenv("SOCKS5_PASS") or "sockspass123"
 
 print(f"🔐 SOCKS5 代理：{SOCKS5_HOST}:{SOCKS5_PORT} (用户：{SOCKS5_USER})")
 
