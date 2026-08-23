@@ -1,21 +1,14 @@
 GitHub 镜像下载速度测试 (SOCKS5 代理)
 ============================================================
 SOCKS5 代理：1.sggg3326.top:6005
-测试时间：2026-08-23 17:46:13
+测试时间：2026-08-23 18:08:11
 测试文件：https://github.com/microsoft/vscode/archive/refs/tags/1.85.0.tar.gz
 超时时间：180 秒
 ============================================================
 
 排名 | 地址 | 耗时 | 大小 | 速度 | 状态
 ------------------------------------------------------------
-   1 | https://gh.con.sh/ | 1.6s | 0.0MB | 0.0Mbps | 成功
-   2 | https://ghproxy.link/ | 3.6s | 0.0MB | 0.0Mbps | 成功
-   3 | https://gh-proxy.com/ | 7.3s | 16.4MB | 18.9Mbps | 成功
-   4 | https://ghproxy.cc/ | 14.3s | 16.4MB | 9.6Mbps | 成功
-   5 | https://ghp.ci/ | 失败 | - | - | 连接失败
-   6 | https://github.proxy.amk97.cn/ | 失败 | - | - | 连接失败
-   7 | https://github.moeyy.cn/ | 失败 | - | - | 连接失败
-   8 | https://ghproxy.homeboyc.cn/ | 失败 | - | - | 403 Client Error: Forbidden fo
-   9 | https://hub.gitmirror.com/ | 失败 | - | - | 连接失败
-  10 | https://github.hunsh.cn/ | 失败 | - | - | 连接失败
-  11 | https://ghps.cc/ | 失败 | - | - | 404 Client Error: Not Found fo
+   1 | https://gh-proxy.com/ | 11.8s | 16.4MB | 11.7Mbps | 成功
+   2 | https://ghproxy.cc/ | 16.3s | 16.4MB | 8.4Mbps | 成功
+   3 | https://gh.404cafe.fun/ | 17.1s | 16.4MB | 8.0Mbps | 成功
+   4 | https://ghfast.top/ | 20.8s | 16.4MB | 6.6Mbps | 成功

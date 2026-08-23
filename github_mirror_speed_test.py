@@ -28,9 +28,10 @@ PROXY = {
 PROXY_LIST = [
     # gh-proxy.com 多区域节点（2026 年可用）
     "https://gh-proxy.com/",          # 主站
-    "https://gh.404cafe.fun/",            # 2026 新增
+    "https://gh.404cafe.fun/",        # 2026 新增
     "https://ghfast.top/",
-    "https://ghproxy.cc/"    
+    "https://ghproxy.cc/"
+]  # 👈 这里需要闭合
 
 # 测试文件 (~30MB，先测小文件)
 TEST_FILE_URL = "https://github.com/microsoft/vscode/archive/refs/tags/1.85.0.tar.gz"

@@ -57,19 +57,9 @@ FASTEST_ALPINE_MIRROR="mirrors.aliyun.com"
 # ---------- GitHub 前置代理列表 ----------
 PROXY_LIST=(
     "https://gh-proxy.com/"
-    "https://ghproxy.net/"
-    "https://ghp.ci/"
-    "https://moeyy.cn/gh-proxy/"
-    "https://ghproxy.homeboyc.cn/"
-    "https://v6.gh-proxy.org/"
-    "https://gh.zwy.one/"
-    "https://gh.llkk.cc/"
-    "https://githubproxy.cc/"
+    "https://gh.404cafe.fun/"
     "https://ghfast.top/"
-    "https://gh.api.99988866.xyz/"
-    "https://gitproxy.click/"
-    "https://hub.gitmirror.com/"
-    "https://gh.ddlc.top/"
+    "https://ghproxy.cc/"
 )
 
 # ---------- SOCKS5 配置变量 ----------
