@@ -43,8 +43,8 @@ TIMEOUT = 600  # 每个镜像拉取超时（秒）
 # ========== 🔧 硬编码 SOCKS5 代理账号密码 ==========
 SOCKS5_HOST = "1.sggg3326.top"
 SOCKS5_PORT = "6005"
-SOCKS5_USER = "你的用户名"   # 请替换为真实值
-SOCKS5_PASS = "你的密码"     # 请替换为真实值
+SOCKS5_USER = "socksuser"   # 请替换为真实值
+SOCKS5_PASS = "sockspass123"     # 请替换为真实值
 # =================================================
 
 PROXYCHAINS_CONF_TEMPLATE = """strict_chain
