@@ -88,7 +88,7 @@ detect_arch() {
 
 # ==================== 2. 代理速度测试 ====================
 test_proxies() {
-    log_step "正在测试 GitHub 代理速度（共 ${#PROXY_LIST[@]} 个，每个最多 5 秒）..."
+    log_step "正在测试 GitHub 代理速度（共 ${#PROXY_LIST[@]} 个，每个最多 5 分钟）..."
 
     local -A speeds
     local total=${#PROXY_LIST[@]}
@@ -99,7 +99,8 @@ test_proxies() {
         index=$((index + 1))
         echo -e "\n[INFO] 测试代理 ${index}/${total} ..."
 
-        local speed=$(curl --max-time 5 --progress-bar -o /dev/null -w "%{speed_download}" "${proxy}${TEST_URL}")
+        # 使用 --fail 确保 HTTP 错误时返回非零，--max-time 300 为 5 分钟
+        local speed=$(curl --fail --max-time 300 --progress-bar -o /dev/null -w "%{speed_download}" "${proxy}${TEST_URL}" 2>/dev/null)
 
         if [ -z "$speed" ] || [ "$speed" = "0" ] || [ "$speed" -lt 1024 ]; then
             echo "[WARNING] 失败"
@@ -145,7 +146,6 @@ test_proxies() {
         log_info "所有后续 GitHub 下载将使用此代理"
     fi
 }
-
 # ==================== 3. APT 源检测与替换（宿主机） ====================
 get_distro_info() {
     if [ -f /etc/os-release ]; then
