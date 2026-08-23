@@ -1,7 +1,5 @@
 name: github前缀代理测试
-  run: |
-    curl -x socks5h://${{ secrets.SOCKS5_USER }}:${{ secrets.SOCKS5_PASS }}@${{ github.event.inputs.socks_host || '1.sggg3326.top' }}:${{ github.event.inputs.socks_port || '6005' }} \
-    -I https://httpbin.org/ip
+
 on:
   schedule:
     - cron: '0 2 * * *'  # 每天北京时间 10:00
@@ -23,6 +21,12 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    # ----- 新增：测试代理连通性 -----
+    - name: 测试代理连通性
+      run: |
+        curl -x socks5h://${{ secrets.SOCKS5_USER }}:${{ secrets.SOCKS5_PASS }}@${{ github.event.inputs.socks_host || '1.sggg3326.top' }}:${{ github.event.inputs.socks_port || '6005' }} \
+        -I https://httpbin.org/ip
 
     - name: Set up Python
       uses: actions/setup-python@v5
