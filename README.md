@@ -62,20 +62,16 @@ cd api && docker-compose up -d
 | 🔧 **api/** | 服务端 API | [查看 →](./api/README.md) |
 | 🦆 **psyduck/** | FRP 一键部署 | [查看 →](./psyduck/README.md) |
 | 🚀 **shadowrocket/** | Shadowrocket 配置 | [查看 →](./shadowrocket/README.md) |
-| 🖥️ **monitor_website/** | 服务监控面板 | [查看 →](./monitor_website/README.md) |
 
 ---
 
 ## 🔗 快速链接
 
-| 文档 | 说明 |
-|------|------|
-| [📱 iOS 部署](./ios/README.md) | Quantumult X / Surge / Loon / Shadowrocket |
-| [🐉 青龙脚本](./ql/README.md) | wskey 转换配置 |
-| [🔧 服务端 API](./api/README.md) | Flask 部署 |
-| [🦆 FRP 部署](./psyduck/README.md) | 可达鸭一键部署 |
-| [🖥️ 监控面板](./monitor_website/README.md) | 健康状态监控 |
-| [❓ 故障排查](./ios/README.md#故障排查) | 常见问题 |
+- [📱 iOS 部署](./ios/README.md) - Quantumult X / Surge / Loon
+- [🐉 青龙脚本](./ql/README.md) - wskey 转换配置
+- [🔧 服务端 API](./api/README.md) - Flask 部署
+- [🦆 FRP 部署](./psyduck/README.md) - 可达鸭一键部署
+- [❓ 故障排查](./ios/README.md#故障排查)
 
 ---
 
