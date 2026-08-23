@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.34
+#   版本：9.35
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -16,7 +16,7 @@
 #         - 针对 armv7/arm64 自动使用 ubuntu-ports 源（阿里云）
 #         - 从外部报告文件获取最快代理，移除内置代理列表和测速逻辑
 #         - 所有 GitHub 下载统一使用该代理
-#         - apt 源替换同时处理 archive 和 security
+#         - apt 源替换：x86 替换 archive/security，ARM 替换 ports
 #         - gost 查找优化，避免多文件冲突
 #         - 重构：.sources 格式仅替换域名保留路径
 #         - 重构：git clone/pull 增加 3 分钟超时与重试
@@ -27,7 +27,7 @@
 #         - 重构：select_deployment_mode 先检测可用网卡，仅一个时自动单网口
 #         - 修复：所有 bc 依赖替换为 awk
 #         - 修复：get_physical_ifaces 同时支持 IPv4/IPv6
-#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名，支持变量展开
+#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名，区分 x86 和 ARM
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -416,7 +416,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 9. 构建 SOCKS5 镜像（自适应架构，使用 sed 替换 apt 源） ====================
+# ==================== 9. 构建 SOCKS5 镜像（自适应架构，区分 x86 和 ARM 源） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -432,17 +432,17 @@ build_socks5_image() {
         x86_64)
             frp_arch="amd64"
             gost_arch="amd64"
-            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g; s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu/#g" /etc/apt/sources.list'
             ;;
         aarch64|arm64)
             frp_arch="arm64"
             gost_arch="arm64"
-            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://ports.ubuntu.com/ubuntu-ports/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         armv7l|armv8l)
             frp_arch="arm"
             gost_arch="armv7"
-            apt_source='RUN sed -i -e "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" -e "s#http://security.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
+            apt_source='RUN sed -i "s#http://ports.ubuntu.com/ubuntu-ports/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list'
             ;;
         *)
             log_error "不支持的架构: $arch"
