@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Docker 镜像加速器速度测试（通过 socat 将 SOCKS5 转为 HTTP 代理，供 Docker 使用）
+Docker 镜像加速器速度测试（强制清理缓存，实时打印拉取日志）
 """
 
 import subprocess
@@ -8,6 +8,7 @@ import time
 import os
 import json
 import socket
+import sys
 
 # ---------- 镜像站列表 ----------
 MIRRORS = [
@@ -30,11 +31,8 @@ MIRRORS = [
     "https://docker.fnnas.com",
 ]
 
-# ========== 修改此处为你要测试的镜像 ==========
-TEST_IMAGE = "hdbjlizhe/autman:latest"   # 自定义用户镜像（非官方）
-# ============================================
-
-TIMEOUT = 300  # 每个镜像拉取超时（秒）
+TEST_IMAGE = "hdbjlizhe/autman:latest"
+TIMEOUT = 600  # 每个镜像拉取超时（秒）
 
 # ========== 🔧 请在这里修改为您的真实代理账密 ==========
 SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
@@ -62,16 +60,24 @@ def start_socat(port):
         socks5_url
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(1)  # 等待 socat 就绪
+    time.sleep(2)
     return proc
 
+def clear_docker_cache():
+    """强制清理所有 Docker 缓存"""
+    print("🧹 正在清理 Docker 缓存...")
+    try:
+        subprocess.run(["docker", "stop", "$(docker ps -aq)"], shell=True, check=False)
+        subprocess.run(["docker", "system", "prune", "-a", "-f"], check=True)
+        subprocess.run(["docker", "volume", "prune", "-f"], check=True)
+        subprocess.run(["docker", "builder", "prune", "-a", "-f"], check=True)
+        print("✅ Docker 缓存已清空")
+    except Exception as e:
+        print(f"⚠️ 清理缓存时出错: {e}")
+
 def pull_image(mirror: str, proxy_port: int) -> tuple:
-    """通过 HTTP 代理拉取镜像"""
+    """通过 HTTP 代理拉取镜像，实时打印 Docker 输出"""
     registry = mirror.replace("https://", "").replace("http://", "")
-    
-    # 构造完整镜像名：
-    # 如果 TEST_IMAGE 包含 '/'，则视为用户仓库，直接拼接 <registry>/<image>
-    # 否则为官方镜像，拼接 <registry>/library/<image>
     if "/" in TEST_IMAGE:
         full_image = f"{registry}/{TEST_IMAGE}"
     else:
@@ -82,11 +88,15 @@ def pull_image(mirror: str, proxy_port: int) -> tuple:
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     env["NO_PROXY"] = "localhost,127.0.0.1"
     cmd = ["docker", "pull", full_image]
+    
+    print(f"📥 执行: {' '.join(cmd)}")
     start = time.time()
     try:
+        # stdout 实时打印，stderr 捕获用于错误信息
         proc = subprocess.run(
             cmd,
-            capture_output=True,
+            stdout=None,            # 输出到控制台（实时显示）
+            stderr=subprocess.PIPE, # 捕获错误信息
             text=True,
             timeout=TIMEOUT,
             env=env,
@@ -96,16 +106,17 @@ def pull_image(mirror: str, proxy_port: int) -> tuple:
         if proc.returncode == 0:
             return mirror, elapsed, True, "成功"
         else:
-            err = proc.stderr.strip()[:100]
+            err = proc.stderr.strip()[:200] if proc.stderr else "未知错误"
             return mirror, elapsed, False, f"拉取失败: {err}"
     except subprocess.TimeoutExpired:
+        print("⏰ 拉取超时")
         return mirror, TIMEOUT, False, "超时"
     except Exception as e:
         return mirror, 0, False, f"异常: {str(e)[:50]}"
 
 def main():
     print("=" * 70)
-    print("🐳 Docker 镜像加速器速度测试（socat 代理转换）")
+    print("🐳 Docker 镜像加速器速度测试（强制清理缓存 + 实时日志）")
     print(f"测试镜像: {TEST_IMAGE}")
     print(f"镜像站数量: {len(MIRRORS)}")
     print(f"代理出口: {SOCKS5_HOST}:{SOCKS5_PORT}")
@@ -119,6 +130,9 @@ def main():
         subprocess.run(["sudo", "apt-get", "update"], check=True)
         subprocess.run(["sudo", "apt-get", "install", "-y", "socat"], check=True)
 
+    # 首次清理缓存
+    clear_docker_cache()
+
     # 启动 socat
     port = find_free_port()
     socat_proc = start_socat(port)
@@ -127,21 +141,28 @@ def main():
     results = []
     try:
         for idx, mirror in enumerate(MIRRORS, 1):
-            print(f"\n🔄 [{idx}/{len(MIRRORS)}] 测试: {mirror}")
+            print("\n" + "=" * 70)
+            print(f"🔄 [{idx}/{len(MIRRORS)}] 测试镜像站: {mirror}")
+            print("=" * 70)
+            
             url, elapsed, success, msg = pull_image(mirror, port)
             results.append((url, elapsed, success, msg))
             status_icon = "✅" if success else "❌"
-            print(f"{status_icon} 完成: {url:<45} - {elapsed:.2f}s - {msg}")
+            print(f"{status_icon} 完成: {url:<45} - 耗时 {elapsed:.2f}s - {msg}")
+            
+            # 每个镜像测试后清理缓存（避免缓存影响下一个）
+            if idx < len(MIRRORS):
+                clear_docker_cache()
     finally:
         socat_proc.terminate()
         socat_proc.wait()
 
-    # 排序：成功的按耗时升序，失败的放最后
+    # 排序
     results.sort(key=lambda x: (not x[2], x[1] if x[2] else float('inf')))
 
     # 生成结果文件
     with open("docker_mirror_results.txt", "w", encoding="utf-8") as f:
-        f.write("Docker 镜像加速器测速结果\n")
+        f.write("Docker 镜像加速器测速结果（强制清理缓存）\n")
         f.write(f"测试镜像: {TEST_IMAGE}\n")
         f.write(f"测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("=" * 70 + "\n")
@@ -173,7 +194,7 @@ def main():
 
     if fast_three:
         daemon_config = {"registry-mirrors": fast_three}
-        with open("daemon.json", "w", encoding="utf-8") as f:   # 修改为 daemon.json
+        with open("daemon.json", "w", encoding="utf-8") as f:
             json.dump(daemon_config, f, indent=2)
         print(f"📦 已生成 daemon.json，包含最快的 {len(fast_three)} 个镜像：")
         for i, url in enumerate(fast_three, 1):
