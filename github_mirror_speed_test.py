@@ -31,10 +31,10 @@ PROXY = {
 
 # ---------- 更新后的 GitHub 镜像列表（2026 可用） ----------
 PROXY_LIST = [
-    "https://ghproxy.net/",
-    "https://mirror.ghproxy.com/",
-    "https://github.com/",
-    "https://gh.api.99988866.xyz/",
+    "https://gh-proxy.com/",          # 主站
+    "https://gh.404cafe.fun/",        # 2026 新增
+    "https://ghfast.top/",
+    "https://ghproxy.cc/"
     # 你可以继续添加更多
 ]
 
