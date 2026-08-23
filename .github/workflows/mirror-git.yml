@@ -55,7 +55,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add speed_test_results.txt
           git diff --cached --quiet || git commit -m "更新测速结果 [skip ci]"
-          git push origin X
+          git push origin main
 
       - name: Show best mirror
         run: |
