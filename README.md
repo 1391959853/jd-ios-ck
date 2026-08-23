@@ -16,10 +16,10 @@
 
 ```ini
 # 重写
-https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie2qx.conf
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/ios/JDcookie2qx.conf
 
 # 脚本
-https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ios/JDcookie.js
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/ios/JDcookie.js
 
 # MitM 域名
 api.m.jd.com, sh.jd.com
@@ -29,7 +29,7 @@ api.m.jd.com, sh.jd.com
 
 ```bash
 # 脚本
-https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ql/wskey-update.py
+https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/ql/wskey-update.py
 
 # 定时任务
 0 */4 * * *
@@ -42,7 +42,7 @@ https://raw.githubusercontent.com/1391959853/jd-ios-ck/main/ql/wskey-update.py
 curl -fsSL https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/psyduck/frp-psyduck.sh | bash
 
 # 强制重建
-curl -fsSL .../frp-psyduck.sh | bash -s -- --debug
+curl -fsSL https://raw.githubusercontent.com/1391959853/jd-ios-ck/X/psyduck/frp-psyduck.sh | bash -s -- --debug
 ```
 
 ### 服务端 API（可选）
