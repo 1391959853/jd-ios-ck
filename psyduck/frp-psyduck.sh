@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.29
+#   版本：9.30
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -13,6 +13,7 @@
 #         - 快速检查使用临时容器测试 /ipv6 端点
 #         - SOCKS5 镜像改用 gost + frp（账户可配置）
 #         - SOCKS5 镜像构建自适应架构（amd64/arm64/armv7）
+#         - 针对 armv7 自动使用 ubuntu-ports 源（阿里云/中科大）
 #         - 前置代理测速：下载 50MB 文件，每个代理最多 5 秒
 #         - 代理测速仅首次部署和 --debug 时执行
 #         - 所有 GitHub 下载统一使用最优代理
@@ -107,10 +108,8 @@ test_proxies() {
         index=$((index + 1))
         echo -e "\n[INFO] 测试代理 ${index}/${total} ..."
 
-        # 移除 2>/dev/null 让进度条显示
         local speed=$(curl --max-time 5 --progress-bar -o /dev/null -w "%{speed_download}" "${proxy}${TEST_URL}")
 
-        # 速度是整数（字节/秒），直接比较
         if [ -z "$speed" ] || [ "$speed" = "0" ] || [ "$speed" -lt 1024 ]; then
             echo "[WARNING] 失败"
             speeds["$proxy"]=0
@@ -438,7 +437,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 9. 构建 SOCKS5 镜像 ====================
+# ==================== 9. 构建 SOCKS5 镜像（自适应架构和 apt 源） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -448,25 +447,83 @@ build_socks5_image() {
     local arch=$(uname -m)
     local frp_arch=""
     local gost_arch=""
+    local apt_source=""
+    local base_image="ubuntu:22.04"
+    local distro="ubuntu"   # 默认 Ubuntu
+    local codename="jammy"
+
+    # 检测宿主机发行版信息（用于 apt 源）
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        distro="$ID"
+        codename="$VERSION_CODENAME"
+        [ -z "$codename" ] && codename="jammy"
+    fi
+    distro=$(echo "$distro" | tr '[:upper:]' '[:lower:]')
+
     case "$arch" in
-        x86_64) frp_arch="amd64"; gost_arch="amd64" ;;
-        aarch64|arm64) frp_arch="arm64"; gost_arch="arm64" ;;
-        armv7l|armv8l) frp_arch="arm"; gost_arch="armv7" ;;
-        *) log_error "不支持的架构: $arch"; exit 1 ;;
+        x86_64)
+            frp_arch="amd64"
+            gost_arch="amd64"
+            # x86 使用标准 ubuntu 源
+            if [ "$distro" = "ubuntu" ]; then
+                apt_source="RUN echo \"deb http://mirrors.aliyun.com/ubuntu/ $codename main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ $codename-updates main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ $codename-backports main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu/ $codename-security main restricted universe multiverse\" > /etc/apt/sources.list"
+            else
+                # Debian x86
+                apt_source="RUN echo \"deb http://mirrors.aliyun.com/debian $codename main contrib non-free non-free-firmware\n\
+deb http://mirrors.aliyun.com/debian $codename-updates main contrib non-free non-free-firmware\" > /etc/apt/sources.list"
+            fi
+            ;;
+        aarch64|arm64)
+            frp_arch="arm64"
+            gost_arch="arm64"
+            # arm64 使用 ubuntu-ports
+            if [ "$distro" = "ubuntu" ]; then
+                apt_source="RUN echo \"deb http://mirrors.aliyun.com/ubuntu-ports/ $codename main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-updates main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-backports main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-security main restricted universe multiverse\" > /etc/apt/sources.list"
+            else
+                # Debian arm64 使用 debian 源（官方已有 arm64 支持）
+                apt_source="RUN echo \"deb [arch=arm64] http://mirrors.aliyun.com/debian $codename main contrib non-free non-free-firmware\n\
+deb [arch=arm64] http://mirrors.aliyun.com/debian $codename-updates main contrib non-free non-free-firmware\" > /etc/apt/sources.list"
+            fi
+            ;;
+        armv7l|armv8l)
+            frp_arch="arm"
+            gost_arch="armv7"
+            # armv7 使用 ubuntu-ports
+            if [ "$distro" = "ubuntu" ]; then
+                apt_source="RUN echo \"deb http://mirrors.aliyun.com/ubuntu-ports/ $codename main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-updates main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-backports main restricted universe multiverse\n\
+deb http://mirrors.aliyun.com/ubuntu-ports/ $codename-security main restricted universe multiverse\" > /etc/apt/sources.list"
+            else
+                # Debian armhf 使用 debian 源 + arch 指定
+                apt_source="RUN echo \"deb [arch=armhf] http://mirrors.aliyun.com/debian $codename main contrib non-free non-free-firmware\n\
+deb [arch=armhf] http://mirrors.aliyun.com/debian $codename-updates main contrib non-free non-free-firmware\" > /etc/apt/sources.list"
+            fi
+            ;;
+        *)
+            log_error "不支持的架构: $arch"
+            exit 1
+            ;;
     esac
-    
+
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
-    log_info "构建 SOCKS5 镜像（gost + frp）..."
+    log_info "构建 SOCKS5 镜像（gost + frp）使用 apt 源配置: $apt_source"
+
     local tmpd=$(mktemp -d)
     cd "$tmpd"
 
-    cat > Dockerfile <<'EOF'
-FROM ubuntu:22.04
+    # 构建 Dockerfile，动态插入 apt_source
+    cat > Dockerfile <<EOF
+FROM $base_image
 
-RUN echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse\n\
-deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse\n\
-deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse\n\
-deb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list
+$apt_source
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y curl && \
@@ -476,29 +533,29 @@ ARG GITHUB_PROXY_PREFIX
 ARG FRP_ARCH
 ARG GOST_ARCH
 
-ENV GITHUB_PROXY_PREFIX=${GITHUB_PROXY_PREFIX}
-ENV FRP_ARCH=${FRP_ARCH}
-ENV GOST_ARCH=${GOST_ARCH}
-ENV SOCKS_USER=xiaoz
-ENV SOCKS_PASS=a1391959853
-ENV FRP_VERSION=0.70.1
-ENV GOST_VERSION=2.12.0
+ENV GITHUB_PROXY_PREFIX=\${GITHUB_PROXY_PREFIX}
+ENV FRP_ARCH=\${FRP_ARCH}
+ENV GOST_ARCH=\${GOST_ARCH}
+ENV SOCKS_USER=$SOCKS5_USER
+ENV SOCKS_PASS=$SOCKS5_PASS
+ENV FRP_VERSION=$FRP_VERSION
+ENV GOST_VERSION=$GOST_VERSION
 
-RUN if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
-        FRP_URL="${GITHUB_PROXY_PREFIX}https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz"; \
-        GOST_URL="${GITHUB_PROXY_PREFIX}https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz"; \
+RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
+        FRP_URL="\${GITHUB_PROXY_PREFIX}https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz"; \
+        GOST_URL="\${GITHUB_PROXY_PREFIX}https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz"; \
     else \
-        FRP_URL="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz"; \
-        GOST_URL="https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz"; \
+        FRP_URL="https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz"; \
+        GOST_URL="https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz"; \
     fi && \
-    curl -L --retry 5 --retry-delay 5 "$FRP_URL" | tar xz -C /tmp && \
+    curl -L --retry 5 --retry-delay 5 "\$FRP_URL" | tar xz -C /tmp && \
     mv /tmp/frp_*/frpc /usr/local/bin/ && \
     chmod +x /usr/local/bin/frpc && \
-    curl -L --retry 5 --retry-delay 5 "$GOST_URL" | tar xz -C /tmp && \
-    find /tmp -name gost -exec mv {} /usr/local/bin/ \; && \
+    curl -L --retry 5 --retry-delay 5 "\$GOST_URL" | tar xz -C /tmp && \
+    find /tmp -name "gost*" -exec mv {} /usr/local/bin/gost \; && \
     chmod +x /usr/local/bin/gost
 
-RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://${SOCKS_USER}:${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
+RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://\${SOCKS_USER}:\${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
     chmod +x /start.sh
 
 EXPOSE 2233
