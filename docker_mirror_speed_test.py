@@ -10,6 +10,7 @@ import os
 import json
 import sys
 import tempfile
+import socket  # 新增，用于解析域名
 
 # ========== 设置时区为北京时间 ==========
 os.environ['TZ'] = 'Asia/Shanghai'
@@ -59,15 +60,23 @@ def install_proxychains():
 def create_proxychains_conf():
     """
     生成 proxychains 配置文件，返回文件路径
-    格式依据官方文档：socks5 主机 端口 用户名 密码
+    解析域名为 IP，避免 proxychains 对域名的限制
     """
+    # 解析域名得到 IP
+    try:
+        ip = socket.gethostbyname(SOCKS5_HOST)
+        print(f"🔍 解析代理域名 {SOCKS5_HOST} -> {ip}")
+    except:
+        print(f"⚠️ 无法解析域名 {SOCKS5_HOST}，将直接使用域名（可能失败）")
+        ip = SOCKS5_HOST
+
     conf_content = f"""strict_chain
 proxy_dns
 tcp_read_time_out 15000
 tcp_connect_time_out 8000
 
 [ProxyList]
-socks5 {SOCKS5_HOST} {SOCKS5_PORT} {SOCKS5_USER} {SOCKS5_PASS}
+socks5 {ip} {SOCKS5_PORT} {SOCKS5_USER} {SOCKS5_PASS}
 """
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as f:
         f.write(conf_content)
