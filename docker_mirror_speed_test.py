@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Docker 镜像加速器速度测试（顺序执行，强制 SOCKS5 代理）
-使用 proxychains4 使 docker pull 走 SOCKS5 出口
+Docker 镜像加速器速度测试（通过 socat 将 SOCKS5 转为 HTTP 代理，供 Docker 使用）
 """
 
 import subprocess
 import time
 import os
 import json
+import socket
 
 # ---------- 镜像站列表 ----------
 MIRRORS = [
@@ -33,34 +33,54 @@ MIRRORS = [
 TEST_IMAGE = "ubuntu:22.04"
 TIMEOUT = 300  # 每个镜像拉取超时（秒）
 
-# ========== 🔧 请在这里替换为您的真实代理账密 ==========
+# ========== 🔧 请在这里修改为您的真实代理账密 ==========
 SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
 SOCKS5_PORT = os.getenv("SOCKS5_PORT", "6005")
-SOCKS5_USER = "socksuser"   # <--- 替换为真实用户名
-SOCKS5_PASS = "sockspass123"     # <--- 替换为真实密码
-# ==================================================
+SOCKS5_USER = os.getenv("SOCKS5_USER", "socksuser")   # 请替换
+SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")     # 请替换
+# ======================================================
 
-def setup_proxychains():
-    """生成 proxychains4 配置文件"""
-    config = f"""
-strict_chain
-proxy_dns
-tcp_read_time_out 15000
-tcp_connect_time_out 8000
+def find_free_port():
+    """找一个空闲端口"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
-[ProxyList]
-socks5://{SOCKS5_USER}:{SOCKS5_PASS}@{SOCKS5_HOST}:{SOCKS5_PORT}
-"""
-    with open("/tmp/proxychains.conf", "w") as f:
-        f.write(config)
+def start_socat(port):
+    """启动 socat，将本地 HTTP 代理转发到 SOCKS5"""
+    socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT}"
+    if SOCKS5_USER and SOCKS5_PASS:
+        socks5_url = f"SOCKS5:{SOCKS5_HOST}:{SOCKS5_PORT},socks5user={SOCKS5_USER},socks5pass={SOCKS5_PASS}"
+    cmd = [
+        "socat",
+        f"TCP4-LISTEN:{port},fork,reuseaddr",
+        socks5_url
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(1)  # 等待 socat 就绪
+    return proc
 
-def pull_from_mirror(mirror: str) -> tuple:
+def pull_image(mirror: str, proxy_port: int) -> tuple:
+    """通过 HTTP 代理拉取镜像"""
     registry = mirror.replace("https://", "").replace("http://", "")
     full_image = f"{registry}/library/{TEST_IMAGE}"
-    cmd = ["proxychains4", "-f", "/tmp/proxychains.conf", "docker", "pull", full_image]
+    env = os.environ.copy()
+    env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    env["NO_PROXY"] = "localhost,127.0.0.1"
+    cmd = ["docker", "pull", full_image]
     start = time.time()
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT, check=False)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+            env=env,
+            check=False
+        )
         elapsed = time.time() - start
         if proc.returncode == 0:
             return mirror, elapsed, True, "成功"
@@ -74,23 +94,38 @@ def pull_from_mirror(mirror: str) -> tuple:
 
 def main():
     print("=" * 70)
-    print("🐳 Docker 镜像加速器速度测试（顺序执行，SOCKS5 强制代理）")
+    print("🐳 Docker 镜像加速器速度测试（socat 代理转换）")
     print(f"测试镜像: {TEST_IMAGE}")
     print(f"镜像站数量: {len(MIRRORS)}")
     print(f"代理出口: {SOCKS5_HOST}:{SOCKS5_PORT}")
     print("=" * 70)
 
-    setup_proxychains()
+    # 确保 socat 已安装
+    try:
+        subprocess.run(["socat", "-V"], capture_output=True, check=True)
+    except:
+        print("⚠️ socat 未安装，正在安装...")
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+        subprocess.run(["sudo", "apt-get", "install", "-y", "socat"], check=True)
+
+    # 启动 socat
+    port = find_free_port()
+    socat_proc = start_socat(port)
+    print(f"✅ socat 已启动，监听 127.0.0.1:{port}")
+
     results = []
+    try:
+        for idx, mirror in enumerate(MIRRORS, 1):
+            print(f"\n🔄 [{idx}/{len(MIRRORS)}] 测试: {mirror}")
+            url, elapsed, success, msg = pull_image(mirror, port)
+            results.append((url, elapsed, success, msg))
+            status_icon = "✅" if success else "❌"
+            print(f"{status_icon} 完成: {url:<45} - {elapsed:.2f}s - {msg}")
+    finally:
+        socat_proc.terminate()
+        socat_proc.wait()
 
-    for idx, mirror in enumerate(MIRRORS, 1):
-        print(f"\n🔄 [{idx}/{len(MIRRORS)}] 测试: {mirror}")
-        url, elapsed, success, msg = pull_from_mirror(mirror)
-        results.append((url, elapsed, success, msg))
-        status_icon = "✅" if success else "❌"
-        print(f"{status_icon} 完成: {url:<45} - {elapsed:.2f}s - {msg}")
-
-    # 按成功+耗时排序
+    # 排序：成功的按耗时升序，失败的放最后
     results.sort(key=lambda x: (not x[2], x[1] if x[2] else float('inf')))
 
     # 生成结果文件
@@ -117,7 +152,7 @@ def main():
     print(f"✅ 测试完成！成功 {success_count} 个，失败 {len(MIRRORS)-success_count} 个")
     print(f"📄 结果已保存至 docker_mirror_results.txt")
 
-    # 提取最快的三个镜像
+    # 提取最快的三个
     fast_three = []
     for url, elapsed, success, _ in results:
         if success:
@@ -135,7 +170,6 @@ def main():
     else:
         print("⚠️ 没有可用镜像，不生成配置文件")
 
-    # 输出最优镜像
     for url, elapsed, success, _ in results:
         if success:
             print(f"\n🏆 最快的镜像站: {url} (耗时 {elapsed:.2f}s)")
