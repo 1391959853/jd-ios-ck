@@ -47,15 +47,6 @@ SOCKS5_USER = "socksuser"   # 请替换为真实值
 SOCKS5_PASS = "sockspass123"     # 请替换为真实值
 # =================================================
 
-PROXYCHAINS_CONF_TEMPLATE = """strict_chain
-proxy_dns
-tcp_read_time_out 15000
-tcp_connect_time_out 8000
-
-[ProxyList]
-socks5 {host} {port} {user} {pass}
-"""
-
 def install_proxychains():
     """确保 proxychains4 已安装"""
     try:
@@ -66,13 +57,18 @@ def install_proxychains():
         subprocess.run(["sudo", "apt-get", "install", "-y", "proxychains4"], check=True)
 
 def create_proxychains_conf():
-    """生成 proxychains 配置文件，返回文件路径"""
-    conf_content = PROXYCHAINS_CONF_TEMPLATE.format(
-        host=SOCKS5_HOST,
-        port=SOCKS5_PORT,
-        user=SOCKS5_USER,
-        pass=SOCKS5_PASS
-    )
+    """
+    生成 proxychains 配置文件，返回文件路径
+    格式依据官方文档：socks5 主机 端口 用户名 密码
+    """
+    conf_content = f"""strict_chain
+proxy_dns
+tcp_read_time_out 15000
+tcp_connect_time_out 8000
+
+[ProxyList]
+socks5 {SOCKS5_HOST} {SOCKS5_PORT} {SOCKS5_USER} {SOCKS5_PASS}
+"""
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf') as f:
         f.write(conf_content)
         return f.name
