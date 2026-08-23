@@ -39,8 +39,8 @@ TIMEOUT = 300  # 每个镜像拉取超时（秒）
 # ========== 🔧 请在这里修改为您的真实代理账密 ==========
 SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
 SOCKS5_PORT = os.getenv("SOCKS5_PORT", "6005")
-SOCKS5_USER = os.getenv("SOCKS5_USER", "你的用户名")   # 请替换
-SOCKS5_PASS = os.getenv("SOCKS5_PASS", "你的密码")     # 请替换
+SOCKS5_USER = os.getenv("SOCKS5_USER", "socksuser")   # 请替换
+SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")     # 请替换
 # ======================================================
 
 def find_free_port():
@@ -173,9 +173,9 @@ def main():
 
     if fast_three:
         daemon_config = {"registry-mirrors": fast_three}
-        with open("docker-daemon.json", "w", encoding="utf-8") as f:
+        with open("daemon.json", "w", encoding="utf-8") as f:   # 修改为 daemon.json
             json.dump(daemon_config, f, indent=2)
-        print(f"📦 已生成 docker-daemon.json，包含最快的 {len(fast_three)} 个镜像：")
+        print(f"📦 已生成 daemon.json，包含最快的 {len(fast_three)} 个镜像：")
         for i, url in enumerate(fast_three, 1):
             print(f"   {i}. {url}")
     else:
