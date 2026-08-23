@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.33
+#   版本：9.34
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -14,9 +14,8 @@
 #         - SOCKS5 镜像改用 gost + frp（账户可配置）
 #         - SOCKS5 镜像构建自适应架构（amd64/arm64/armv7）
 #         - 针对 armv7/arm64 自动使用 ubuntu-ports 源（阿里云）
-#         - 前置代理测速：下载 50MB 文件，每个代理最多 5 秒
-#         - 代理测速仅首次部署和 --debug 时执行
-#         - 所有 GitHub 下载统一使用最优代理
+#         - 从外部报告文件获取最快代理，移除内置代理列表和测速逻辑
+#         - 所有 GitHub 下载统一使用该代理
 #         - 重构：.sources 格式仅替换域名保留路径
 #         - 重构：git clone/pull 增加 3 分钟超时与重试
 #         - 重构：网卡检测仅认可四大运营商公网 IPv6 前缀（240e/2408/2409/240a）
@@ -24,10 +23,9 @@
 #         - 重构：quick_check 修复流程增加删除 SOCKS5 容器
 #         - 重构：DEBUG 模式预先清理非 SSH 容器
 #         - 重构：select_deployment_mode 先检测可用网卡，仅一个时自动单网口
-#         - 修复：test_proxies 进度条显示
 #         - 修复：所有 bc 依赖替换为 awk
 #         - 修复：get_physical_ifaces 同时支持 IPv4/IPv6
-#         - 修复：build_socks5_image 不再依赖宿主机发行版
+#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -54,13 +52,8 @@ BINARY_PATTERN=""
 IPV6_PREFIX_BASE="fdfa"
 FASTEST_ALPINE_MIRROR="mirrors.aliyun.com"
 
-# ---------- GitHub 前置代理列表 ----------
-PROXY_LIST=(
-    "https://gh-proxy.com/"
-    "https://gh.404cafe.fun/"
-    "https://ghfast.top/"
-    "https://ghproxy.cc/"
-)
+# ---------- 测速报告 URL ----------
+REPORT_URL="https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/speed_test_results.txt"
 
 # ---------- SOCKS5 配置变量 ----------
 SOCKS5_USER="xiaoz"
@@ -68,7 +61,7 @@ SOCKS5_PASS="a1391959853"
 FRP_VERSION="0.70.1"
 GOST_VERSION="2.12.0"
 
-# ---------- 全局代理前缀（由 test_proxies 设置） ----------
+# ---------- 全局代理前缀（由 fetch_fastest_proxy_from_report 设置） ----------
 GITHUB_PROXY_PREFIX=""
 
 [ "$EUID" -ne 0 ] && { log_error "请使用 root 权限"; exit 1; }
@@ -86,66 +79,59 @@ detect_arch() {
     log_info "系统架构: $arch, 匹配模式: $BINARY_PATTERN"
 }
 
-# ==================== 2. 代理速度测试 ====================
-test_proxies() {
-    log_step "正在测试 GitHub 代理速度（共 ${#PROXY_LIST[@]} 个，每个最多 5 分钟）..."
+# ==================== 2. 从测速报告获取最快代理 ====================
+fetch_fastest_proxy_from_report() {
+    log_step "正在从测速报告获取最快代理: $REPORT_URL"
+    local tmp_file=$(mktemp)
+    local fastest_proxy=""
+    local fastest_speed=0
 
-    local -A speeds
-    local total=${#PROXY_LIST[@]}
-    local index=0
-    local TEST_URL="https://github.com/docker/docker-ce/releases/download/v26.1.4/docker-ce_26.1.4-1_amd64.deb"
-
-    for proxy in "${PROXY_LIST[@]}"; do
-        index=$((index + 1))
-        echo -e "\n[INFO] 测试代理 ${index}/${total} ..."
-
-        # 使用 --fail 确保 HTTP 错误时返回非零，--max-time 300 为 5 分钟
-        local speed=$(curl --fail --max-time 300 --progress-bar -o /dev/null -w "%{speed_download}" "${proxy}${TEST_URL}" 2>/dev/null)
-
-        if [ -z "$speed" ] || [ "$speed" = "0" ] || [ "$speed" -lt 1024 ]; then
-            echo "[WARNING] 失败"
-            speeds["$proxy"]=0
-        else
-            if [ "$speed" -ge 1048576 ]; then
-                local speed_show=$(awk "BEGIN {printf \"%.2f\", $speed/1048576}")
-                echo "[SUCCESS] 速度: ${speed_show} MB/s"
+    if curl -fsSL --connect-timeout 10 --max-time 60 "$REPORT_URL" -o "$tmp_file" 2>/dev/null; then
+        # 解析报告：提取状态为"成功"的行，取出地址和速度数值
+        # 报告格式: 排名 | 地址 | 耗时 | 大小 | 速度 | 状态
+        # 速度列格式如 "6.1Mbps" 或 "5.3Mbps"
+        local proxies=$(awk -F'|' '$6 ~ /成功/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); gsub(/^[ \t]+|[ \t]+$/, "", $5); print $2 "|" $5}' "$tmp_file" 2>/dev/null)
+        
+        if [ -n "$proxies" ]; then
+            # 遍历每一行，提取速度数值（去掉 Mbps 后缀）
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                local proxy=$(echo "$line" | cut -d'|' -f1)
+                local speed_str=$(echo "$line" | cut -d'|' -f2)
+                # 提取数字部分（如 "6.1"）
+                local speed_num=$(echo "$speed_str" | grep -oE '[0-9]+\.[0-9]+|[0-9]+' | head -1)
+                if [ -n "$speed_num" ]; then
+                    # 将速度统一转为 Mbps 数值（假设都是 Mbps）
+                    local speed_val=$(echo "$speed_num" | awk '{print $1}')
+                    if (( $(echo "$speed_val > $fastest_speed" | bc -l 2>/dev/null || echo 0) )); then
+                        fastest_speed=$speed_val
+                        fastest_proxy="$proxy"
+                    fi
+                fi
+            done <<< "$proxies"
+            
+            if [ -n "$fastest_proxy" ]; then
+                GITHUB_PROXY_PREFIX="$fastest_proxy"
+                log_success "从报告获取到最快代理: $fastest_proxy (速度 ${fastest_speed} Mbps)"
+                rm -f "$tmp_file"
+                return 0
             else
-                local speed_show=$(awk "BEGIN {printf \"%.2f\", $speed/1024}")
-                echo "[SUCCESS] 速度: ${speed_show} KB/s"
+                log_warning "报告中未找到有效的成功代理记录"
             fi
-            speeds["$proxy"]=$speed
+        else
+            log_warning "报告解析失败，未找到代理数据"
         fi
-    done
-
-    echo ""
-    local best=""
-    local best_speed=0
-    for proxy in "${!speeds[@]}"; do
-        if [ "${speeds[$proxy]}" -gt "$best_speed" ]; then
-            best_speed=${speeds[$proxy]}
-            best="$proxy"
-        fi
-    done
-
-    if [ -z "$best" ]; then
-        log_warning "所有代理均不可用，将使用直连"
-        GITHUB_PROXY_PREFIX=""
     else
-        GITHUB_PROXY_PREFIX="$best"
-        if [ "$best_speed" -ge 1048576 ]; then
-            local best_show=$(awk "BEGIN {printf \"%.2f\", $best_speed/1048576}")
-            log_success "已选择最快代理（速度 ${best_show} MB/s）"
-        else
-            local best_show=$(awk "BEGIN {printf \"%.2f\", $best_speed/1024}")
-            if [ "$best_speed" -lt 512000 ]; then
-                log_warning "最快代理速度仅 ${best_show} KB/s，低于 500 KB/s，下载可能较慢"
-            else
-                log_success "已选择最快代理（速度 ${best_show} KB/s）"
-            fi
-        fi
-        log_info "所有后续 GitHub 下载将使用此代理"
+        log_warning "获取测速报告失败"
     fi
+
+    rm -f "$tmp_file"
+    # 若失败，设置 GITHUB_PROXY_PREFIX 为空（后续将直连）
+    GITHUB_PROXY_PREFIX=""
+    log_error "无法从报告获取代理，将使用直连（可能导致下载失败）"
+    return 1
 }
+
 # ==================== 3. APT 源检测与替换（宿主机） ====================
 get_distro_info() {
     if [ -f /etc/os-release ]; then
@@ -463,15 +449,15 @@ build_socks5_image() {
     esac
 
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
-    log_info "构建 SOCKS5 镜像（gost + frp）"
+    log_info "构建 SOCKS5 镜像（gost + frp）使用 Ubuntu 源"
 
     local tmpd=$(mktemp -d)
     cd "$tmpd"
 
-    cat > Dockerfile <<EOF
+    cat > Dockerfile <<'EOF'
 FROM ubuntu:22.04
 
-$apt_source
+RUN sed -i "s#http://archive.ubuntu.com/ubuntu/#http://mirrors.aliyun.com/ubuntu-ports/#g" /etc/apt/sources.list
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y curl && \
@@ -481,29 +467,35 @@ ARG GITHUB_PROXY_PREFIX
 ARG FRP_ARCH
 ARG GOST_ARCH
 
-ENV GITHUB_PROXY_PREFIX=\${GITHUB_PROXY_PREFIX}
-ENV FRP_ARCH=\${FRP_ARCH}
-ENV GOST_ARCH=\${GOST_ARCH}
-ENV SOCKS_USER=$SOCKS5_USER
-ENV SOCKS_PASS=$SOCKS5_PASS
-ENV FRP_VERSION=$FRP_VERSION
-ENV GOST_VERSION=$GOST_VERSION
+ENV GITHUB_PROXY_PREFIX=${GITHUB_PROXY_PREFIX}
+ENV FRP_ARCH=${FRP_ARCH}
+ENV GOST_ARCH=${GOST_ARCH}
+ENV SOCKS_USER=xiaoz
+ENV SOCKS_PASS=a1391959853
+ENV FRP_VERSION=0.70.1
+ENV GOST_VERSION=2.12.0
 
-RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
-        FRP_URL="\${GITHUB_PROXY_PREFIX}https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz"; \
-        GOST_URL="\${GITHUB_PROXY_PREFIX}https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz"; \
+# 下载 frpc（优先代理，失败则直连）
+RUN if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
+        (curl -L --fail --retry 5 --retry-delay 5 "$GITHUB_PROXY_PREFIXhttps://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp) || \
+        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp); \
     else \
-        FRP_URL="https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz"; \
-        GOST_URL="https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz"; \
+        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${FRP_ARCH}.tar.gz" | tar xz -C /tmp; \
     fi && \
-    curl -L --retry 5 --retry-delay 5 "\$FRP_URL" | tar xz -C /tmp && \
     mv /tmp/frp_*/frpc /usr/local/bin/ && \
-    chmod +x /usr/local/bin/frpc && \
-    curl -L --retry 5 --retry-delay 5 "\$GOST_URL" | tar xz -C /tmp && \
+    chmod +x /usr/local/bin/frpc
+
+# 下载 gost（优先代理，失败则直连）
+RUN if [ -n "$GITHUB_PROXY_PREFIX" ]; then \
+        (curl -L --fail --retry 5 --retry-delay 5 "$GITHUB_PROXY_PREFIXhttps://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp) || \
+        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp); \
+    else \
+        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${GOST_ARCH}.tar.gz" | tar xz -C /tmp; \
+    fi && \
     find /tmp -name "gost*" -exec mv {} /usr/local/bin/gost \; && \
     chmod +x /usr/local/bin/gost
 
-RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://\${SOCKS_USER}:\${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
+RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://${SOCKS_USER}:${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
     chmod +x /start.sh
 
 EXPOSE 2233
@@ -519,6 +511,7 @@ EOF
     cd / && rm -rf "$tmpd"
     log_success "SOCKS5 镜像构建完成"
 }
+
 # ==================== 10. 构建 SSH 镜像 ====================
 build_ssh_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$"; then
@@ -1149,7 +1142,11 @@ main() {
 
     if [ "$DEBUG_MODE" = true ]; then
         log_warning "调试模式：将重新部署所有容器（SSH 容器会保留）"
-        test_proxies
+        # 从报告获取最快代理，若失败则退出
+        if ! fetch_fastest_proxy_from_report; then
+            log_error "无法获取代理，部署中止"
+            exit 1
+        fi
         deploy_all
         exit 0
     fi
@@ -1157,8 +1154,11 @@ main() {
     if [ -f "$DEPLOY_FLAG" ]; then
         quick_check
     else
-        log_info "首次部署，正在测试代理速度..."
-        test_proxies
+        log_info "首次部署，正在获取最快代理..."
+        if ! fetch_fastest_proxy_from_report; then
+            log_error "无法获取代理，部署中止"
+            exit 1
+        fi
         deploy_all
     fi
 }
