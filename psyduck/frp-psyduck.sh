@@ -454,26 +454,17 @@ build_socks5_image() {
         x86_64)
             frp_arch="amd64"
             gost_arch="amd64"
-            apt_source='RUN echo "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
+            apt_source='RUN echo -e "deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
             ;;
         aarch64|arm64)
             frp_arch="arm64"
             gost_arch="arm64"
-            apt_source='RUN echo "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
+            apt_source='RUN echo -e "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
             ;;
         armv7l|armv8l)
             frp_arch="arm"
             gost_arch="armv7"
-            apt_source='RUN echo "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
+            apt_source='RUN echo -e "deb http://mirrors.aliyun.com/ubuntu-ports/ jammy main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-updates main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-backports main restricted universe multiverse\ndeb http://mirrors.aliyun.com/ubuntu-ports/ jammy-security main restricted universe multiverse" > /etc/apt/sources.list'
             ;;
         *)
             log_error "不支持的架构: $arch"
