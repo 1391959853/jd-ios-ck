@@ -30,14 +30,17 @@ MIRRORS = [
     "https://docker.fnnas.com",
 ]
 
-TEST_IMAGE = "ubuntu:22.04"
+# ========== 修改此处为你要测试的镜像 ==========
+TEST_IMAGE = "hdbjlizhe/autman:latest"   # 自定义用户镜像（非官方）
+# ============================================
+
 TIMEOUT = 300  # 每个镜像拉取超时（秒）
 
 # ========== 🔧 请在这里修改为您的真实代理账密 ==========
 SOCKS5_HOST = os.getenv("SOCKS5_HOST", "1.sggg3326.top")
 SOCKS5_PORT = os.getenv("SOCKS5_PORT", "6005")
-SOCKS5_USER = os.getenv("SOCKS5_USER", "socksuser")   # 请替换
-SOCKS5_PASS = os.getenv("SOCKS5_PASS", "sockspass123")     # 请替换
+SOCKS5_USER = os.getenv("SOCKS5_USER", "你的用户名")   # 请替换
+SOCKS5_PASS = os.getenv("SOCKS5_PASS", "你的密码")     # 请替换
 # ======================================================
 
 def find_free_port():
@@ -65,7 +68,15 @@ def start_socat(port):
 def pull_image(mirror: str, proxy_port: int) -> tuple:
     """通过 HTTP 代理拉取镜像"""
     registry = mirror.replace("https://", "").replace("http://", "")
-    full_image = f"{registry}/library/{TEST_IMAGE}"
+    
+    # 构造完整镜像名：
+    # 如果 TEST_IMAGE 包含 '/'，则视为用户仓库，直接拼接 <registry>/<image>
+    # 否则为官方镜像，拼接 <registry>/library/<image>
+    if "/" in TEST_IMAGE:
+        full_image = f"{registry}/{TEST_IMAGE}"
+    else:
+        full_image = f"{registry}/library/{TEST_IMAGE}"
+    
     env = os.environ.copy()
     env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
