@@ -15,21 +15,12 @@ jobs:
         with:
           ref: main
 
-      - name: Install proxychains4
-        run: sudo apt-get update && sudo apt-get install -y proxychains4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
-      - name: Run Docker mirror speed test (via SOCKS5)
-        env:
-          SOCKS5_HOST: ${{ github.event.inputs.socks_host || '1.sggg3326.top' }}
-          SOCKS5_PORT: ${{ github.event.inputs.socks_port || '6005' }}
-          # 以下两行可以保留，但脚本硬编码优先，可忽略
-          SOCKS5_USER: "socksuser"
-          SOCKS5_PASS: "sockspass123"
+      - name: Run Docker mirror speed test
         run: python3 docker_mirror_speed_test.py
 
       - name: Upload results as artifact
