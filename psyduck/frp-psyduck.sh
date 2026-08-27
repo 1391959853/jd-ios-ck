@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.36
+#   版本：9.37
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -31,6 +31,7 @@
 #         - [MOD] Docker 镜像加速配置文件从远程 URL 动态拉取，失败回退
 #         - [MOD] 修改 Docker 加速器检查函数，智能重启（仅在无容器运行时重启）
 #         - [MOD] 维护脚本改为每天重启 Docker 服务（替代逐个重启容器）
+#         - [MOD] SOCKS5 镜像构建改为使用本地预下载的 frpc 和 gost（避免重复下载）
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -92,21 +93,15 @@ fetch_fastest_proxy_from_report() {
     local fastest_speed=0
 
     if curl -fsSL --connect-timeout 10 --max-time 60 "$REPORT_URL" -o "$tmp_file" 2>/dev/null; then
-        # 解析报告：提取状态为"成功"的行，取出地址和速度数值
-        # 报告格式: 排名 | 地址 | 耗时 | 大小 | 速度 | 状态
-        # 速度列格式如 "6.1Mbps" 或 "5.3Mbps"
         local proxies=$(awk -F'|' '$6 ~ /成功/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); gsub(/^[ \t]+|[ \t]+$/, "", $5); print $2 "|" $5}' "$tmp_file" 2>/dev/null)
         
         if [ -n "$proxies" ]; then
-            # 遍历每一行，提取速度数值（去掉 Mbps 后缀）
             while IFS= read -r line; do
                 [ -z "$line" ] && continue
                 local proxy=$(echo "$line" | cut -d'|' -f1)
                 local speed_str=$(echo "$line" | cut -d'|' -f2)
-                # 提取数字部分（如 "6.1"）
                 local speed_num=$(echo "$speed_str" | grep -oE '[0-9]+\.[0-9]+|[0-9]+' | head -1)
                 if [ -n "$speed_num" ]; then
-                    # 将速度统一转为 Mbps 数值（假设都是 Mbps）
                     local speed_val=$(echo "$speed_num" | awk '{print $1}')
                     if (( $(echo "$speed_val > $fastest_speed" | bc -l 2>/dev/null || echo 0) )); then
                         fastest_speed=$speed_val
@@ -131,7 +126,6 @@ fetch_fastest_proxy_from_report() {
     fi
 
     rm -f "$tmp_file"
-    # 若失败，设置 GITHUB_PROXY_PREFIX 为空（后续将直连）
     GITHUB_PROXY_PREFIX=""
     log_error "无法从报告获取代理，将使用直连（可能导致下载失败）"
     return 1
@@ -243,7 +237,6 @@ check_docker_mirror() {
     local tmp_file="/tmp/daemon.json"
     local fallback='{"registry-mirrors": ["https://docker.1ms.run"]}'
 
-    # 1. 尝试从远程下载最新配置
     local download_success=false
     if [ -n "${GITHUB_PROXY_PREFIX:-}" ]; then
         local proxy_prefix="${GITHUB_PROXY_PREFIX%/}/"
@@ -260,7 +253,6 @@ check_docker_mirror() {
         fi
     fi
 
-    # 2. 处理下载结果
     if [ "$download_success" = "true" ] && [ -s "$tmp_file" ] && grep -q '"registry-mirrors"' "$tmp_file"; then
         mkdir -p /etc/docker
         cp "$tmp_file" "$daemon"
@@ -271,7 +263,6 @@ check_docker_mirror() {
         echo "$fallback" > "$daemon"
     fi
 
-    # 3. 智能重启 Docker（仅在安全前提下）
     if command -v docker &>/dev/null; then
         local running_containers=$(docker ps -q 2>/dev/null | wc -l)
         if [ "$running_containers" -eq 0 ]; then
@@ -367,7 +358,6 @@ install_docker() {
     
     systemctl enable --now docker 2>/dev/null || true
     
-    # 如果已有 daemon.json，Docker 启动时会自动读取
     if [ -f /etc/docker/daemon.json ]; then
         log_info "Docker 已启动，配置已加载"
     fi
@@ -450,7 +440,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 9. 构建 SOCKS5 镜像（自适应架构，区分 x86 和 ARM 源） ====================
+# ==================== 9. 构建 SOCKS5 镜像（使用本地预下载二进制） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -484,16 +474,105 @@ build_socks5_image() {
             ;;
     esac
 
-    # 确保代理前缀末尾有斜杠
     if [ -n "$GITHUB_PROXY_PREFIX" ] && [ "${GITHUB_PROXY_PREFIX: -1}" != "/" ]; then
         GITHUB_PROXY_PREFIX="${GITHUB_PROXY_PREFIX}/"
     fi
 
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
-    log_info "构建 SOCKS5 镜像（gost + frp）"
 
+    # 本地二进制存储目录
+    LOCAL_BIN_DIR="/opt/psyduck/bin"
+    mkdir -p "$LOCAL_BIN_DIR"
+
+    # 下载 frpc（如果本地不存在）
+    if [ ! -f "$LOCAL_BIN_DIR/frpc" ]; then
+        log_info "下载 frpc (版本 ${FRP_VERSION})..."
+        local frp_tmp="/tmp/frp_${FRP_VERSION}_${frp_arch}.tar.gz"
+        local frp_url="${GITHUB_PROXY_PREFIX}https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frp_arch}.tar.gz"
+        local success=false
+        for i in {1..3}; do
+            if curl -L --fail --retry 3 --connect-timeout 10 -o "$frp_tmp" "$frp_url"; then
+                success=true
+                break
+            fi
+            log_warning "frpc 下载失败 (尝试 $i/3)，等待 2 秒..."
+            sleep 2
+        done
+        if [ "$success" = false ]; then
+            frp_url="https://github.com/fatedier/frp/releases/download/v${FRP_VERSION}/frp_${FRP_VERSION}_linux_${frp_arch}.tar.gz"
+            for i in {1..3}; do
+                if curl -L --fail --retry 3 --connect-timeout 10 -o "$frp_tmp" "$frp_url"; then
+                    success=true
+                    break
+                fi
+                log_warning "frpc 直连下载失败 (尝试 $i/3)，等待 2 秒..."
+                sleep 2
+            done
+        fi
+        if [ "$success" = false ]; then
+            log_error "frpc 下载失败，无法构建 SOCKS5 镜像"
+            exit 1
+        fi
+        tar -xzf "$frp_tmp" -C /tmp
+        local frp_dir=$(tar -tf "$frp_tmp" | head -1 | cut -d'/' -f1)
+        mv "/tmp/$frp_dir/frpc" "$LOCAL_BIN_DIR/frpc"
+        chmod +x "$LOCAL_BIN_DIR/frpc"
+        rm -f "$frp_tmp"
+        log_success "frpc 已下载到 $LOCAL_BIN_DIR/frpc"
+    else
+        log_info "frpc 已存在，跳过下载"
+    fi
+
+    # 下载 gost（如果本地不存在）
+    if [ ! -f "$LOCAL_BIN_DIR/gost" ]; then
+        log_info "下载 gost (版本 ${GOST_VERSION})..."
+        local gost_tmp="/tmp/gost_${GOST_VERSION}_${gost_arch}.tar.gz"
+        local gost_url="${GITHUB_PROXY_PREFIX}https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
+        local success=false
+        for i in {1..3}; do
+            if curl -L --fail --retry 3 --connect-timeout 10 -o "$gost_tmp" "$gost_url"; then
+                success=true
+                break
+            fi
+            log_warning "gost 下载失败 (尝试 $i/3)，等待 2 秒..."
+            sleep 2
+        done
+        if [ "$success" = false ]; then
+            gost_url="https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
+            for i in {1..3}; do
+                if curl -L --fail --retry 3 --connect-timeout 10 -o "$gost_tmp" "$gost_url"; then
+                    success=true
+                    break
+                fi
+                log_warning "gost 直连下载失败 (尝试 $i/3)，等待 2 秒..."
+                sleep 2
+            done
+        fi
+        if [ "$success" = false ]; then
+            log_error "gost 下载失败，无法构建 SOCKS5 镜像"
+            exit 1
+        fi
+        tar -xzf "$gost_tmp" -C /tmp
+        local gost_file=$(find /tmp -type f -name "gost*" ! -name "*.tar.gz" | head -1)
+        if [ -z "$gost_file" ]; then
+            log_error "未找到 gost 二进制文件"
+            exit 1
+        fi
+        mv "$gost_file" "$LOCAL_BIN_DIR/gost"
+        chmod +x "$LOCAL_BIN_DIR/gost"
+        rm -f "$gost_tmp"
+        log_success "gost 已下载到 $LOCAL_BIN_DIR/gost"
+    else
+        log_info "gost 已存在，跳过下载"
+    fi
+
+    # 构建镜像
+    log_info "构建 SOCKS5 镜像（使用本地二进制文件）"
     local tmpd=$(mktemp -d)
     cd "$tmpd"
+
+    cp "$LOCAL_BIN_DIR/frpc" .
+    cp "$LOCAL_BIN_DIR/gost" .
 
     cat > Dockerfile <<EOF
 FROM ubuntu:22.04
@@ -504,37 +583,12 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y curl && \
     apt-get clean
 
-ARG GITHUB_PROXY_PREFIX
-ARG FRP_ARCH
-ARG GOST_ARCH
+COPY frpc /usr/local/bin/
+COPY gost /usr/local/bin/
+RUN chmod +x /usr/local/bin/frpc /usr/local/bin/gost
 
-ENV GITHUB_PROXY_PREFIX=\${GITHUB_PROXY_PREFIX}
-ENV FRP_ARCH=\${FRP_ARCH}
-ENV GOST_ARCH=\${GOST_ARCH}
 ENV SOCKS_USER=$SOCKS5_USER
 ENV SOCKS_PASS=$SOCKS5_PASS
-ENV FRP_VERSION=$FRP_VERSION
-ENV GOST_VERSION=$GOST_VERSION
-
-# 下载 frpc（优先代理，失败则直连）
-RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
-        (curl -L --fail --retry 5 --retry-delay 5 "\$GITHUB_PROXY_PREFIXhttps://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp) || \
-        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp); \
-    else \
-        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_linux_\${FRP_ARCH}.tar.gz" | tar xz -C /tmp; \
-    fi && \
-    mv /tmp/frp_*/frpc /usr/local/bin/ && \
-    chmod +x /usr/local/bin/frpc
-
-# 下载 gost（优先代理，失败则直连）
-RUN if [ -n "\$GITHUB_PROXY_PREFIX" ]; then \
-        (curl -L --fail --retry 5 --retry-delay 5 "\$GITHUB_PROXY_PREFIXhttps://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp) || \
-        (curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp); \
-    else \
-        curl -L --fail --retry 5 --retry-delay 5 "https://github.com/ginuerzh/gost/releases/download/v\${GOST_VERSION}/gost_\${GOST_VERSION}_linux_\${GOST_ARCH}.tar.gz" | tar xz -C /tmp; \
-    fi && \
-    find /tmp -name "gost*" -type f | head -1 | xargs -I {} mv {} /usr/local/bin/gost && \
-    chmod +x /usr/local/bin/gost
 
 RUN printf '#!/bin/bash\n/usr/local/bin/gost -L "socks5://\${SOCKS_USER}:\${SOCKS_PASS}@:2233" &\nsleep 2\nexec /usr/local/bin/frpc -c /app/frpc.ini\n' > /start.sh && \
     chmod +x /start.sh
@@ -543,12 +597,7 @@ EXPOSE 2233
 CMD ["/start.sh"]
 EOF
 
-    docker build \
-        --build-arg GITHUB_PROXY_PREFIX="${GITHUB_PROXY_PREFIX}" \
-        --build-arg FRP_ARCH="${frp_arch}" \
-        --build-arg GOST_ARCH="${gost_arch}" \
-        -t psyduck-socks5 .
-    
+    docker build -t psyduck-socks5 .
     cd / && rm -rf "$tmpd"
     log_success "SOCKS5 镜像构建完成"
 }
@@ -1021,7 +1070,6 @@ quick_check() {
     fi
     source "$CONFIG_FILE"
 
-    # 确保 alpine 镜像存在
     if ! docker image inspect alpine &>/dev/null; then
         log_info "拉取 alpine 基础镜像..."
         docker pull alpine
