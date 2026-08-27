@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.37
+#   版本：9.38
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -32,6 +32,7 @@
 #         - [MOD] 修改 Docker 加速器检查函数，智能重启（仅在无容器运行时重启）
 #         - [MOD] 维护脚本改为每天重启 Docker 服务（替代逐个重启容器）
 #         - [MOD] SOCKS5 镜像构建改为使用本地预下载的 frpc 和 gost（避免重复下载）
+#         - [MOD] 网卡检测支持 bond 接口，IPv6 连通性检测仅需公网地址（放宽 ping 测试）
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -629,10 +630,19 @@ EOF
 }
 
 # ==================== 11. 网卡探测与 macvlan 网络创建 ====================
+# [MOD] 支持 bond 接口，并放宽 IPv6 连通性检测
 get_physical_ifaces() {
     local ifaces=()
-    for i in $(ls /sys/class/net/ | grep -vE 'lo|docker|br-|veth'); do
-        [ -e "/sys/class/net/$i/device" ] && ip addr show "$i" &>/dev/null && ifaces+=("$i")
+    for i in $(ls /sys/class/net/ | grep -vE '^lo$|^docker|^br-|^veth'); do
+        # 对于 bond 接口，直接检查是否 UP 且拥有 IPv4 地址
+        if [[ "$i" =~ ^bond[0-9]+ ]]; then
+            if ip addr show "$i" &>/dev/null && ip -4 addr show "$i" | grep -q 'inet' ; then
+                ifaces+=("$i")
+            fi
+        else
+            # 物理网卡（存在 device 目录）
+            [ -e "/sys/class/net/$i/device" ] && ip addr show "$i" &>/dev/null && ifaces+=("$i")
+        fi
     done
     echo "${ifaces[@]}"
 }
@@ -644,6 +654,42 @@ get_iface_info() {
     local gw=$(ip route | grep "default" | grep "$iface" | awk '{print $3}')
     [ -z "$gw" ] && gw=$(echo "$ip" | awk -F. '{print $1"."$2"."$3".1"}')
     echo "$ip|$subnet|$gw"
+}
+
+# [MOD] 放宽 ping 测试，只要存在公网 IPv6 地址即视为可用
+check_iface_ipv6() {
+    local iface=$1
+    local addrs=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80')
+    [ -z "$addrs" ] && return 1
+
+    local public_addr=""
+    for addr in $addrs; do
+        case "$addr" in
+            240e:*|2408:*|2409:*|240a:*) public_addr="$addr"; break ;;
+        esac
+    done
+    [ -z "$public_addr" ] && return 1
+
+    # ping 测试仅作参考，只要地址存在即通过
+    # 但为了尽量验证，尝试 ping 几个常见 IPv6 主机，若全部失败也认为可用
+    local ping_success=false
+    for host in sggg3326.top ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
+        if ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null; then
+            ping_success=true
+            break
+        fi
+    done
+    if [ "$ping_success" = false ]; then
+        for ip in 2001:4860:4860::8888 2606:4700:4700::1111; do
+            if ping -6 -c 1 -W 2 -I "$iface" "$ip" &>/dev/null; then
+                ping_success=true
+                break
+            fi
+        done
+    fi
+
+    # 只要有公网地址就认为可用（即使 ping 全部失败）
+    return 0
 }
 
 create_macvlan_network() {
@@ -867,27 +913,8 @@ EOF
     fi
 }
 
-# ==================== 15. IPv6 网卡检测函数 ====================
-check_iface_ipv6() {
-    local iface=$1
-    local addrs=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80')
-    [ -z "$addrs" ] && return 1
-
-    local public_addr=""
-    for addr in $addrs; do
-        case "$addr" in
-            240e:*|2408:*|2409:*|240a:*) public_addr="$addr"; break ;;
-        esac
-    done
-    [ -z "$public_addr" ] && return 1
-
-    for host in sggg3326.top ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
-        ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null && return 0
-    done
-    ping -6 -c 1 -W 2 -I "$iface" 2001:4860:4860::8888 &>/dev/null && return 0
-    ping -6 -c 1 -W 2 -I "$iface" 2606:4700:4700::1111 &>/dev/null && return 0
-    return 1
-}
+# ==================== 15. IPv6 网卡检测函数（已合并到 check_iface_ipv6） ====================
+# (已内联)
 
 # ==================== 16. 核心交互与配置 ====================
 select_deployment_mode() {
