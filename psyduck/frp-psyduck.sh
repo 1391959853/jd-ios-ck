@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.35
+#   版本：9.36
 #   功能：
 #         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
 #         - 移除用户组权限设置（按用户要求）
@@ -28,6 +28,9 @@
 #         - 修复：所有 bc 依赖替换为 awk
 #         - 修复：get_physical_ifaces 同时支持 IPv4/IPv6
 #         - 修复：build_socks5_image 使用 sed 替换 apt 源域名，区分 x86 和 ARM
+#         - [MOD] Docker 镜像加速配置文件从远程 URL 动态拉取，失败回退
+#         - [MOD] 修改 Docker 加速器检查函数，智能重启（仅在无容器运行时重启）
+#         - [MOD] 维护脚本改为每天重启 Docker 服务（替代逐个重启容器）
 #   使用：sudo ./frp-psyduck.sh [--debug|--check]
 # ============================================
 set -euo pipefail
@@ -232,22 +235,53 @@ deb http://security.debian.org/debian-security bookworm-security main contrib no
     log_success "APT 源更新完成"
 }
 
-# ==================== 4. Docker 镜像加速检查 ====================
+# ==================== 4. Docker 镜像加速检查（MODIFIED） ====================
 check_docker_mirror() {
     log_step "检查 Docker 镜像加速器..."
     local daemon="/etc/docker/daemon.json"
-    if [ -f "$daemon" ] && grep -q "docker.1ms.run" "$daemon"; then
-        log_success "Docker 加速器已存在"
-        return
+    local DAEMON_JSON_URL="https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/daemon.json"
+    local tmp_file="/tmp/daemon.json"
+    local fallback='{"registry-mirrors": ["https://docker.1ms.run"]}'
+
+    # 1. 尝试从远程下载最新配置
+    local download_success=false
+    if [ -n "${GITHUB_PROXY_PREFIX:-}" ]; then
+        local proxy_prefix="${GITHUB_PROXY_PREFIX%/}/"
+        log_info "使用代理 ${proxy_prefix} 下载配置文件..."
+        if curl -fsSL --connect-timeout 10 --max-time 30 -o "$tmp_file" "${proxy_prefix}${DAEMON_JSON_URL}"; then
+            download_success=true
+        fi
     fi
-    
-    mkdir -p /etc/docker
-    echo '{"registry-mirrors": ["https://docker.1ms.run"]}' > "$daemon"
-    log_success "Docker 加速器配置已写入"
-    
+
+    if [ "$download_success" != "true" ]; then
+        log_info "直连下载配置文件..."
+        if curl -fsSL --connect-timeout 10 --max-time 30 -o "$tmp_file" "$DAEMON_JSON_URL"; then
+            download_success=true
+        fi
+    fi
+
+    # 2. 处理下载结果
+    if [ "$download_success" = "true" ] && [ -s "$tmp_file" ] && grep -q '"registry-mirrors"' "$tmp_file"; then
+        mkdir -p /etc/docker
+        cp "$tmp_file" "$daemon"
+        log_success "已从远程获取最新 Docker 镜像加速配置"
+        rm -f "$tmp_file"
+    else
+        log_warning "远程获取失败或格式无效，使用回退配置（docker.1ms.run）"
+        echo "$fallback" > "$daemon"
+    fi
+
+    # 3. 智能重启 Docker（仅在安全前提下）
     if command -v docker &>/dev/null; then
-        log_info "Docker 已安装，重启 Docker 使配置生效"
-        systemctl restart docker
+        local running_containers=$(docker ps -q 2>/dev/null | wc -l)
+        if [ "$running_containers" -eq 0 ]; then
+            log_info "没有运行中的容器，正在重启 Docker 使配置生效..."
+            systemctl restart docker
+            log_success "Docker 已重启，新配置已生效"
+        else
+            log_warning "检测到运行中的容器（可能包含 SSH 服务），为避免中断连接，Docker 未重启。"
+            log_warning "新配置将在下次 Docker 重启后生效（由每日维护脚本执行）。"
+        fi
     else
         log_info "Docker 尚未安装，配置将在安装 Docker 后生效"
     fi
@@ -333,9 +367,9 @@ install_docker() {
     
     systemctl enable --now docker 2>/dev/null || true
     
-    if [ -f /etc/docker/daemon.json ] && grep -q "docker.1ms.run" /etc/docker/daemon.json; then
-        systemctl restart docker
-        log_info "Docker 已安装，重启使其使用镜像加速"
+    # 如果已有 daemon.json，Docker 启动时会自动读取
+    if [ -f /etc/docker/daemon.json ]; then
+        log_info "Docker 已启动，配置已加载"
     fi
     
     log_success "Docker 安装完成"
@@ -1056,19 +1090,23 @@ quick_check() {
     log_success "快速检查完成"
 }
 
-# ==================== 19. 维护脚本生成 ====================
+# ==================== 19. 维护脚本生成（MODIFIED） ====================
 generate_maintenance_script() {
     cat > "$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
 LOG="/var/log/psyduck_maintenance.log"
-echo "$(date) 开始维护重启" >> "$LOG"
-for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck'); do
-    docker restart "$c" >> "$LOG" 2>&1
-done
+echo "$(date) 开始维护：重启 Docker 服务" >> "$LOG"
+systemctl restart docker
+sleep 5
+if docker ps -a --format '{{.Names}}' | grep -q '^psyduck'; then
+    echo "$(date) Docker 重启完成，容器已自动恢复" >> "$LOG"
+else
+    echo "$(date) 警告：未发现 psyduck 容器，请检查" >> "$LOG"
+fi
 echo "$(date) 维护完成" >> "$LOG"
 EOF
     chmod +x "$SCRIPT_PATH"
-    log_success "维护脚本生成（每天3点重启所有容器）"
+    log_success "维护脚本生成（每天重启 Docker）"
 }
 
 # ==================== 20. systemd timer 设置 ====================
