@@ -38,7 +38,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
+          # 使用 --autostash 自动暂存未提交的更改，避免 "unscathed changes" 错误
+          git pull --rebase --autostash origin main
           git add docker_mirror_results.txt daemon.json
+          # 仅当有变更时才提交
           git diff --cached --quiet || git commit -m "更新Docker镜像测速结果和配置文件 [skip ci]"
           git push origin main
