@@ -8,7 +8,5 @@ SOCKS5 代理：1.sggg3326.top:6005
 
 排名 | 地址 | 耗时 | 大小 | 速度 | 状态
 ------------------------------------------------------------
-   1 | https://gh-proxy.com/ | 20.5s | 10.5MB | 1.5Mbps | 成功
-   2 | https://ghfast.top/ | 9.2s | 10.5MB | 9.6Mbps | 成功
-   3 | https://ghproxy.cc/ | 14.8s | 10.5MB | 1.9Mbps | 成功
-   4 | https://gh.404cafe.fun/ | 14.4s | 10.5MB | 15.0Mbps | 成功
+
+   1 | https://gh.404cafe.fun/ | 14.4s | 10.5MB | 15.0Mbps | 成功
