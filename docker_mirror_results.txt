@@ -1,26 +1,58 @@
-Docker 镜像加速器测速结果
+Docker 镜像加速器测速结果（proxychains4 + SOCKS5）
 测试镜像: hdbjlizhe/autman:latest
-测试时间: 2026-08-23 17:33:42
+测试时间（北京时间）: 2026-08-27 16:12:52
 ======================================================================
 排名 | 镜像站 | 耗时 | 状态
 ----------------------------------------------------------------------
-   1 | https://dockerproxy.net | 0.72s | 成功
-   2 | https://docker-registry.nmqu.com | 0.74s | 成功
-   3 | https://hub1.nat.tf | 1.41s | 成功
-   4 | https://hub.1panel.dev | 2.61s | 成功
-   5 | https://dockerproxy.cool | 2.80s | 成功
-   6 | https://docker.m.daocloud.io | 2.90s | 成功
-   7 | https://hub.rat.dev | 2.95s | 成功
-   8 | https://docker.sparkcr.cn | 204.70s | 成功
-     | https://mirror.ccs.tencentyun.com | 失败 | 拉取失败: Error response from daemon: Get "https://mirror.ccs.tencentyun.com/v2/": dial tcp: lookup mirror.ccs
-     | https://docker.1ms.run | 失败 | 拉取失败: error pulling image configuration: download failed after attempts=1: denied: <!DOCTYPE html><html la
-     | https://docker.1panel.live | 失败 | 拉取失败: Error response from daemon: pull access denied for docker.1panel.live/hdbjlizhe/autman, repository d
-     | https://docker.xuanyuan.run | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.run/v2/hdbjlizhe/autman/manifests/latest":
-     | https://docker.xuanyuan.dev | 失败 | 拉取失败: Error response from daemon: Head "https://docker.xuanyuan.dev/v2/hdbjlizhe/autman/manifests/latest":
-     | https://docker.hlmirror.com | 失败 | 拉取失败: Error response from daemon: Head "https://mirror.houlang.cloud/v2/hdbjlizhe/autman/manifests/latest"
-     | https://hub4.nat.tf | 失败 | 拉取失败: Error response from daemon: manifest for hub4.nat.tf/hdbjlizhe/autman:latest not found: manifest unk
-     | https://docker.367231.xyz | 失败 | 拉取失败: Error response from daemon: toomanyrequests: You have reached your unauthenticated pull rate limit. 
-     | https://docker.fnnas.com | 失败 | 拉取失败: Error response from daemon: unauthorized: <html>
-<head><title>401 Authorization Required</title></he
+   1 | https://docker-registry.nmqu.com | 35.43s | 成功
+   2 | https://docker.m.daocloud.io | 44.98s | 成功
+   3 | https://dockerproxy.net | 51.52s | 成功
+   4 | https://hub4.nat.tf | 74.04s | 成功
+     | https://mirror.ccs.tencentyun.com | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: Ge
+     | https://docker.1ms.run | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+error pulling image configurat
+     | https://docker.1panel.live | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: pu
+     | https://docker.sparkcr.cn | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: re
+     | https://hub.rat.dev | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+error pulling image configurat
+     | https://docker.xuanyuan.run | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: He
+     | https://docker.xuanyuan.dev | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: He
+     | https://docker.hlmirror.com | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: He
+     | https://hub1.nat.tf | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: ma
+     | https://docker.367231.xyz | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: to
+     | https://hub.1panel.dev | 失败 | 拉取失败: timeout
+     | https://dockerproxy.cool | 失败 | 拉取失败: timeout
+     | https://docker.fnnas.com | 失败 | 拉取失败: [proxychains] config file found: /tmp/tmpvfc9y2lr.conf
+[proxychains] preloading /usr/lib/x86_64-linux-gnu/libproxychains.so.4
+[proxychains] DLL init: proxychains-ng 4.17
+Error response from daemon: un
 ======================================================================
-成功: 8 / 总数: 17
+成功: 4 / 总数: 17
