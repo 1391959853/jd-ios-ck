@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.41
+#   版本：9.42
 #   功能：
 #         - 固定 GitHub 代理：https://ghproxy.q114.top/
 #         - 移除健康检查（--check 仅提示）
@@ -13,6 +13,7 @@
 #         - macvlan 网络自动创建
 #         - SOCKS5 使用 gost + frp，认证凭据 xiaoz/a1391959853
 #         - --debug 强制重建：删除 SOCKS5 镜像 + 清空缓存二进制
+#         - 部署完成后验证主容器是否可用（访问 /ipv6）
 #         - 其余功能保持稳定
 #   使用：sudo ./frp-psyduck.sh [--debug]
 # ============================================
@@ -982,11 +983,43 @@ deploy_all() {
     generate_maintenance_script
     setup_systemd_timer
     # setup_autostart 已移除（开机自启）
+    
+    verify_main_containers
+    
     touch "$DEPLOY_FLAG"
     log_success "部署完成"
 }
 
-# ==================== 16. 维护脚本生成（只重启主容器） ====================
+# ==================== 16. 验证主容器是否可用 ====================
+verify_main_containers() {
+    log_step "验证主容器是否可用..."
+    local main_containers=$(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$')
+    if [ -z "$main_containers" ]; then
+        log_warning "未找到主容器，跳过验证"
+        return
+    fi
+    for c in $main_containers; do
+        log_info "检查容器 $c ..."
+        # 确保容器在运行
+        if ! docker ps --format '{{.Names}}' | grep -qx "$c"; then
+            log_warning "容器 $c 未运行，尝试启动..."
+            docker start "$c" >/dev/null 2>&1 || {
+                log_error "启动 $c 失败，跳过验证"
+                continue
+            }
+            sleep 2
+        fi
+        # 访问 /ipv6 端点
+        local output=$(docker exec "$c" sh -c "wget -q -O- http://127.0.0.1:24678/ipv6 2>/dev/null || curl -s http://127.0.0.1:24678/ipv6 2>/dev/null")
+        if [ -n "$output" ]; then
+            log_success "容器 $c 验证通过，返回 IPv6: $output"
+        else
+            log_warning "容器 $c 未返回 IPv6，可能服务异常"
+        fi
+    done
+}
+
+# ==================== 17. 维护脚本生成（只重启主容器） ====================
 generate_maintenance_script() {
     cat > "$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
@@ -1001,7 +1034,7 @@ EOF
     log_success "维护脚本生成（每天重启主容器）"
 }
 
-# ==================== 17. systemd timer 设置 ====================
+# ==================== 18. systemd timer 设置 ====================
 setup_systemd_timer() {
     local service_name="psyduck-maintenance.service"
     local timer_name="psyduck-maintenance.timer"
