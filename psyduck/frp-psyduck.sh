@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.40
+#   版本：9.41
 #   功能：
 #         - 固定 GitHub 代理：https://ghproxy.q114.top/
 #         - 移除健康检查（--check 仅提示）
@@ -12,6 +12,7 @@
 #         - 智能网卡检测（支持 bond 接口）
 #         - macvlan 网络自动创建
 #         - SOCKS5 使用 gost + frp，认证凭据 xiaoz/a1391959853
+#         - --debug 强制重建：删除 SOCKS5 镜像 + 清空缓存二进制
 #         - 其余功能保持稳定
 #   使用：sudo ./frp-psyduck.sh [--debug]
 # ============================================
@@ -921,6 +922,10 @@ deploy_all() {
         for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck' | grep -v 'psyduck-ssh'); do
             docker rm -f "$c" 2>/dev/null || true
         done
+        # 强制重建：删除 SOCKS5 镜像及缓存的二进制文件
+        log_info "清理 SOCKS5 镜像和本地缓存二进制..."
+        docker rmi -f psyduck-socks5 2>/dev/null || true
+        rm -rf /opt/psyduck/bin/* 2>/dev/null || true
     fi
 
     log_step "开始完整部署"
