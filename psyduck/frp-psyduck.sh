@@ -1,39 +1,19 @@
 #!/bin/bash
 # ============================================
 #   Psyduck 全自动部署脚本（重构版）
-#   版本：9.38
+#   版本：9.40
 #   功能：
-#         - 修复 Docker 安装脚本下载失败问题（增加重试与备用源）
-#         - 移除用户组权限设置（按用户要求）
-#         - 保持原有顺序，Docker 加速器检查在安装前
-#         - 修复：Docker 未安装时不执行重启
-#         - 优化 APT 源备份与更新，兼容 Debian/Ubuntu 新旧版本
-#         - 仅在需要构建镜像时测速 Alpine 源
-#         - 部署完成后自动重启所有非 SSH 容器
-#         - 快速检查使用临时容器测试 /ipv6 端点
-#         - SOCKS5 镜像改用 gost + frp（账户可配置）
-#         - SOCKS5 镜像构建自适应架构（amd64/arm64/armv7）
-#         - 针对 armv7/arm64 自动使用 ubuntu-ports 源（阿里云）
-#         - 从外部报告文件获取最快代理，移除内置代理列表和测速逻辑
-#         - 所有 GitHub 下载统一使用该代理
-#         - apt 源替换：x86 替换 archive/security，ARM 替换 ports
-#         - gost 查找优化，避免多文件冲突
-#         - 重构：.sources 格式仅替换域名保留路径
-#         - 重构：git clone/pull 增加 3 分钟超时与重试
-#         - 重构：网卡检测仅认可四大运营商公网 IPv6 前缀（240e/2408/2409/240a）
-#         - 重构：docker network rm 增加 -f 强制删除
-#         - 重构：quick_check 修复流程增加删除 SOCKS5 容器
-#         - 重构：DEBUG 模式预先清理非 SSH 容器
-#         - 重构：select_deployment_mode 先检测可用网卡，仅一个时自动单网口
-#         - 修复：所有 bc 依赖替换为 awk
-#         - 修复：get_physical_ifaces 同时支持 IPv4/IPv6
-#         - 修复：build_socks5_image 使用 sed 替换 apt 源域名，区分 x86 和 ARM
-#         - [MOD] Docker 镜像加速配置文件从远程 URL 动态拉取，失败回退
-#         - [MOD] 修改 Docker 加速器检查函数，智能重启（仅在无容器运行时重启）
-#         - [MOD] 维护脚本改为每天重启 Docker 服务（替代逐个重启容器）
-#         - [MOD] SOCKS5 镜像构建改为使用本地预下载的 frpc 和 gost（避免重复下载）
-#         - [MOD] 网卡检测支持 bond 接口，IPv6 连通性检测仅需公网地址（放宽 ping 测试）
-#   使用：sudo ./frp-psyduck.sh [--debug|--check]
+#         - 固定 GitHub 代理：https://ghproxy.q114.top/
+#         - 移除健康检查（--check 仅提示）
+#         - 移除开机自启
+#         - 维护脚本每天只重启主容器
+#         - 固定 Docker 镜像加速三源，配置相同则跳过，不重启 Docker
+#         - 使用新版 gost（go-gost/gost v3.2.6）
+#         - 智能网卡检测（支持 bond 接口）
+#         - macvlan 网络自动创建
+#         - SOCKS5 使用 gost + frp，认证凭据 xiaoz/a1391959853
+#         - 其余功能保持稳定
+#   使用：sudo ./frp-psyduck.sh [--debug]
 # ============================================
 set -euo pipefail
 
@@ -59,17 +39,14 @@ BINARY_PATTERN=""
 IPV6_PREFIX_BASE="fdfa"
 FASTEST_ALPINE_MIRROR="mirrors.aliyun.com"
 
-# ---------- 测速报告 URL ----------
-REPORT_URL="https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/speed_test_results.txt"
+# ---------- 固定 GitHub 代理 ----------
+GITHUB_PROXY_PREFIX="https://ghproxy.q114.top/"
 
 # ---------- SOCKS5 配置变量 ----------
 SOCKS5_USER="xiaoz"
 SOCKS5_PASS="a1391959853"
 FRP_VERSION="0.70.1"
-GOST_VERSION="2.12.0"
-
-# ---------- 全局代理前缀（由 fetch_fastest_proxy_from_report 设置） ----------
-GITHUB_PROXY_PREFIX=""
+GOST_VERSION="3.2.6"   # 使用新版 gost (go-gost/gost)
 
 [ "$EUID" -ne 0 ] && { log_error "请使用 root 权限"; exit 1; }
 
@@ -86,53 +63,7 @@ detect_arch() {
     log_info "系统架构: $arch, 匹配模式: $BINARY_PATTERN"
 }
 
-# ==================== 2. 从测速报告获取最快代理 ====================
-fetch_fastest_proxy_from_report() {
-    log_step "正在从测速报告获取最快代理: $REPORT_URL"
-    local tmp_file=$(mktemp)
-    local fastest_proxy=""
-    local fastest_speed=0
-
-    if curl -fsSL --connect-timeout 10 --max-time 60 "$REPORT_URL" -o "$tmp_file" 2>/dev/null; then
-        local proxies=$(awk -F'|' '$6 ~ /成功/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); gsub(/^[ \t]+|[ \t]+$/, "", $5); print $2 "|" $5}' "$tmp_file" 2>/dev/null)
-        
-        if [ -n "$proxies" ]; then
-            while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                local proxy=$(echo "$line" | cut -d'|' -f1)
-                local speed_str=$(echo "$line" | cut -d'|' -f2)
-                local speed_num=$(echo "$speed_str" | grep -oE '[0-9]+\.[0-9]+|[0-9]+' | head -1)
-                if [ -n "$speed_num" ]; then
-                    local speed_val=$(echo "$speed_num" | awk '{print $1}')
-                    if (( $(echo "$speed_val > $fastest_speed" | bc -l 2>/dev/null || echo 0) )); then
-                        fastest_speed=$speed_val
-                        fastest_proxy="$proxy"
-                    fi
-                fi
-            done <<< "$proxies"
-            
-            if [ -n "$fastest_proxy" ]; then
-                GITHUB_PROXY_PREFIX="$fastest_proxy"
-                log_success "从报告获取到最快代理: $fastest_proxy (速度 ${fastest_speed} Mbps)"
-                rm -f "$tmp_file"
-                return 0
-            else
-                log_warning "报告中未找到有效的成功代理记录"
-            fi
-        else
-            log_warning "报告解析失败，未找到代理数据"
-        fi
-    else
-        log_warning "获取测速报告失败"
-    fi
-
-    rm -f "$tmp_file"
-    GITHUB_PROXY_PREFIX=""
-    log_error "无法从报告获取代理，将使用直连（可能导致下载失败）"
-    return 1
-}
-
-# ==================== 3. APT 源检测与替换（宿主机） ====================
+# ==================== 2. APT 源检测与替换（宿主机） ====================
 get_distro_info() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
@@ -230,56 +161,49 @@ deb http://security.debian.org/debian-security bookworm-security main contrib no
     log_success "APT 源更新完成"
 }
 
-# ==================== 4. Docker 镜像加速检查（MODIFIED） ====================
+# ==================== 3. Docker 镜像加速检查（固定三源） ====================
 check_docker_mirror() {
     log_step "检查 Docker 镜像加速器..."
     local daemon="/etc/docker/daemon.json"
-    local DAEMON_JSON_URL="https://raw.githubusercontent.com/1391959853/jd-ios-ck/refs/heads/main/daemon.json"
-    local tmp_file="/tmp/daemon.json"
-    local fallback='{"registry-mirrors": ["https://docker.1ms.run"]}'
+    
+    local target_mirrors=(
+        "https://docker-registry.nmqu.com"
+        "https://docker.m.daocloud.io"
+        "https://hub1.nat.tf"
+    )
+    local need_write=1
 
-    local download_success=false
-    if [ -n "${GITHUB_PROXY_PREFIX:-}" ]; then
-        local proxy_prefix="${GITHUB_PROXY_PREFIX%/}/"
-        log_info "使用代理 ${proxy_prefix} 下载配置文件..."
-        if curl -fsSL --connect-timeout 10 --max-time 30 -o "$tmp_file" "${proxy_prefix}${DAEMON_JSON_URL}"; then
-            download_success=true
+    if [ -f "$daemon" ]; then
+        local found=0
+        for mirror in "${target_mirrors[@]}"; do
+            if grep -q "$mirror" "$daemon" 2>/dev/null; then
+                found=1
+                break
+            fi
+        done
+        if [ $found -eq 1 ]; then
+            log_success "Docker 镜像加速配置中已包含目标镜像，跳过写入"
+            need_write=0
         fi
     fi
 
-    if [ "$download_success" != "true" ]; then
-        log_info "直连下载配置文件..."
-        if curl -fsSL --connect-timeout 10 --max-time 30 -o "$tmp_file" "$DAEMON_JSON_URL"; then
-            download_success=true
-        fi
+    if [ $need_write -eq 1 ]; then
+        log_info "写入 Docker 镜像加速配置（三个固定镜像）..."
+        cat > "$daemon" <<EOF
+{
+  "registry-mirrors": [
+    "https://docker-registry.nmqu.com",
+    "https://docker.m.daocloud.io",
+    "https://hub1.nat.tf"
+  ]
+}
+EOF
+        log_success "Docker 镜像加速配置已写入"
     fi
-
-    if [ "$download_success" = "true" ] && [ -s "$tmp_file" ] && grep -q '"registry-mirrors"' "$tmp_file"; then
-        mkdir -p /etc/docker
-        cp "$tmp_file" "$daemon"
-        log_success "已从远程获取最新 Docker 镜像加速配置"
-        rm -f "$tmp_file"
-    else
-        log_warning "远程获取失败或格式无效，使用回退配置（docker.1ms.run）"
-        echo "$fallback" > "$daemon"
-    fi
-
-    if command -v docker &>/dev/null; then
-        local running_containers=$(docker ps -q 2>/dev/null | wc -l)
-        if [ "$running_containers" -eq 0 ]; then
-            log_info "没有运行中的容器，正在重启 Docker 使配置生效..."
-            systemctl restart docker
-            log_success "Docker 已重启，新配置已生效"
-        else
-            log_warning "检测到运行中的容器（可能包含 SSH 服务），为避免中断连接，Docker 未重启。"
-            log_warning "新配置将在下次 Docker 重启后生效（由每日维护脚本执行）。"
-        fi
-    else
-        log_info "Docker 尚未安装，配置将在安装 Docker 后生效"
-    fi
+    # 不重启 Docker（由用户或维护脚本重启）
 }
 
-# ==================== 5. Alpine 镜像源测速 ====================
+# ==================== 4. Alpine 镜像源测速 ====================
 test_alpine_mirrors() {
     log_step "测速 Alpine 镜像源（使用 frp 包索引）..."
     local arch=$(uname -m)
@@ -323,7 +247,7 @@ test_alpine_mirrors() {
     log_success "选择最快的 Alpine 镜像源: $FASTEST_ALPINE_MIRROR (速度 $((best_speed / 1024)) KB/s)"
 }
 
-# ==================== 6. 安装 Docker ====================
+# ==================== 5. 安装 Docker ====================
 install_docker() {
     if command -v docker &>/dev/null; then
         log_success "Docker 已安装: $(docker --version)"
@@ -366,7 +290,7 @@ install_docker() {
     log_success "Docker 安装完成"
 }
 
-# ==================== 7. 安装 Git ====================
+# ==================== 6. 安装 Git ====================
 install_git() {
     if command -v git &>/dev/null; then
         log_success "Git 已安装: $(git --version)"
@@ -375,7 +299,7 @@ install_git() {
     apt-get install -y git
 }
 
-# ==================== 8. 克隆仓库与构建主镜像 ====================
+# ==================== 7. 克隆仓库与构建主镜像 ====================
 clone_and_build_main() {
     local repo="https://github.com/xoyoxoyo/relayApi.git"
     
@@ -441,7 +365,7 @@ clone_and_build_main() {
     cd ..
 }
 
-# ==================== 9. 构建 SOCKS5 镜像（使用本地预下载二进制） ====================
+# ==================== 8. 构建 SOCKS5 镜像（使用本地预下载二进制） ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
         log_success "SOCKS5 镜像已存在，无需构建"
@@ -475,13 +399,8 @@ build_socks5_image() {
             ;;
     esac
 
-    if [ -n "$GITHUB_PROXY_PREFIX" ] && [ "${GITHUB_PROXY_PREFIX: -1}" != "/" ]; then
-        GITHUB_PROXY_PREFIX="${GITHUB_PROXY_PREFIX}/"
-    fi
-
     log_info "检测到架构: $arch, frp 包后缀: $frp_arch, gost 包后缀: $gost_arch"
 
-    # 本地二进制存储目录
     LOCAL_BIN_DIR="/opt/psyduck/bin"
     mkdir -p "$LOCAL_BIN_DIR"
 
@@ -528,7 +447,7 @@ build_socks5_image() {
     if [ ! -f "$LOCAL_BIN_DIR/gost" ]; then
         log_info "下载 gost (版本 ${GOST_VERSION})..."
         local gost_tmp="/tmp/gost_${GOST_VERSION}_${gost_arch}.tar.gz"
-        local gost_url="${GITHUB_PROXY_PREFIX}https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
+        local gost_url="${GITHUB_PROXY_PREFIX}https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
         local success=false
         for i in {1..3}; do
             if curl -L --fail --retry 3 --connect-timeout 10 -o "$gost_tmp" "$gost_url"; then
@@ -539,7 +458,7 @@ build_socks5_image() {
             sleep 2
         done
         if [ "$success" = false ]; then
-            gost_url="https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
+            gost_url="https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${gost_arch}.tar.gz"
             for i in {1..3}; do
                 if curl -L --fail --retry 3 --connect-timeout 10 -o "$gost_tmp" "$gost_url"; then
                     success=true
@@ -567,7 +486,6 @@ build_socks5_image() {
         log_info "gost 已存在，跳过下载"
     fi
 
-    # 构建镜像
     log_info "构建 SOCKS5 镜像（使用本地二进制文件）"
     local tmpd=$(mktemp -d)
     cd "$tmpd"
@@ -603,7 +521,7 @@ EOF
     log_success "SOCKS5 镜像构建完成"
 }
 
-# ==================== 10. 构建 SSH 镜像 ====================
+# ==================== 9. 构建 SSH 镜像 ====================
 build_ssh_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$"; then
         log_success "SSH 镜像已存在"
@@ -629,18 +547,15 @@ EOF
     cd / && rm -rf "$tmpd"
 }
 
-# ==================== 11. 网卡探测与 macvlan 网络创建 ====================
-# [MOD] 支持 bond 接口，并放宽 IPv6 连通性检测
+# ==================== 10. 网卡探测与 macvlan 网络创建 ====================
 get_physical_ifaces() {
     local ifaces=()
     for i in $(ls /sys/class/net/ | grep -vE '^lo$|^docker|^br-|^veth'); do
-        # 对于 bond 接口，直接检查是否 UP 且拥有 IPv4 地址
         if [[ "$i" =~ ^bond[0-9]+ ]]; then
             if ip addr show "$i" &>/dev/null && ip -4 addr show "$i" | grep -q 'inet' ; then
                 ifaces+=("$i")
             fi
         else
-            # 物理网卡（存在 device 目录）
             [ -e "/sys/class/net/$i/device" ] && ip addr show "$i" &>/dev/null && ifaces+=("$i")
         fi
     done
@@ -656,7 +571,6 @@ get_iface_info() {
     echo "$ip|$subnet|$gw"
 }
 
-# [MOD] 放宽 ping 测试，只要存在公网 IPv6 地址即视为可用
 check_iface_ipv6() {
     local iface=$1
     local addrs=$(ip -6 addr show "$iface" | grep -oP '(?<=inet6\s)[a-f0-9:]+' | grep -v '^fe80')
@@ -670,25 +584,7 @@ check_iface_ipv6() {
     done
     [ -z "$public_addr" ] && return 1
 
-    # ping 测试仅作参考，只要地址存在即通过
-    # 但为了尽量验证，尝试 ping 几个常见 IPv6 主机，若全部失败也认为可用
-    local ping_success=false
-    for host in sggg3326.top ipv6.nucdn.co test6.ustc.edu.cn 6.ipw.cn ipv6.test-ipv6.com; do
-        if ping -6 -c 1 -W 2 -I "$iface" "$host" &>/dev/null; then
-            ping_success=true
-            break
-        fi
-    done
-    if [ "$ping_success" = false ]; then
-        for ip in 2001:4860:4860::8888 2606:4700:4700::1111; do
-            if ping -6 -c 1 -W 2 -I "$iface" "$ip" &>/dev/null; then
-                ping_success=true
-                break
-            fi
-        done
-    fi
-
-    # 只要有公网地址就认为可用（即使 ping 全部失败）
+    # 只要存在公网地址即认为可用，ping 测试仅作参考
     return 0
 }
 
@@ -713,7 +609,7 @@ create_macvlan_network() {
     log_success "创建网络 $net_name (IPv6 ${ipv6_prefix}:5a35:6fce::/64)"
 }
 
-# ==================== 12. 部署主容器 ====================
+# ==================== 11. 部署主容器 ====================
 deploy_main_container() {
     local net_name=$1
     local remote_port=$2
@@ -783,7 +679,7 @@ EOF
     fi
 }
 
-# ==================== 13. 部署 SOCKS5 容器 ====================
+# ==================== 12. 部署 SOCKS5 容器 ====================
 deploy_socks5_container() {
     local net_name=$1
     local remote_port=$2
@@ -827,7 +723,7 @@ EOF
     log_success "SOCKS5 容器 $container_name 部署成功（gost + frp）"
 }
 
-# ==================== 14. 部署 SSH 容器 ====================
+# ==================== 13. 部署 SSH 容器 ====================
 deploy_ssh_container() {
     local remote_ports=("$@")
     local port_str=$(printf "%s-" "${remote_ports[@]}"); port_str=${port_str%-}
@@ -913,10 +809,7 @@ EOF
     fi
 }
 
-# ==================== 15. IPv6 网卡检测函数（已合并到 check_iface_ipv6） ====================
-# (已内联)
-
-# ==================== 16. 核心交互与配置 ====================
+# ==================== 14. 核心交互与配置 ====================
 select_deployment_mode() {
     local all=($(get_physical_ifaces))
     if [ ${#all[@]} -eq 0 ]; then
@@ -1021,7 +914,7 @@ EOF
     log_success "配置已保存"
 }
 
-# ==================== 17. 主部署流程 ====================
+# ==================== 15. 主部署流程 ====================
 deploy_all() {
     if [ "$DEBUG_MODE" = true ]; then
         log_warning "调试模式：清理所有非 SSH 的现有 psyduck 容器..."
@@ -1083,108 +976,27 @@ deploy_all() {
 
     generate_maintenance_script
     setup_systemd_timer
-    setup_autostart
+    # setup_autostart 已移除（开机自启）
     touch "$DEPLOY_FLAG"
     log_success "部署完成"
 }
 
-# ==================== 18. 快速检查模式 ====================
-quick_check() {
-    log_step "快速检查模式：使用临时容器测试 /ipv6 端点"
-    if [ ! -f "$CONFIG_FILE" ]; then
-        log_error "配置文件不存在，请先部署"
-        exit 1
-    fi
-    source "$CONFIG_FILE"
-
-    if ! docker image inspect alpine &>/dev/null; then
-        log_info "拉取 alpine 基础镜像..."
-        docker pull alpine
-    fi
-
-    for entry in "${NETWORKS[@]}"; do
-        IFS='|' read -r net_name iface subnet gw rport sport ipv6_prefix <<< "$entry"
-        container="psyduck${rport}"
-        socks5_container="psyduck${rport}-socks5"
-        
-        log_info "检查容器 $container ..."
-        docker restart "$container" 2>/dev/null || {
-            log_warning "容器 $container 不存在，重新部署"
-            create_macvlan_network "$net_name" "$iface" "$subnet" "$gw" "$ipv6_prefix"
-            deploy_main_container "$net_name" "$rport" "$gw"
-        }
-
-        local container_ipv4=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container" 2>/dev/null)
-        local test_passed=false
-        
-        if [ -n "$container_ipv4" ]; then
-            if docker run --rm --network "$net_name" alpine sh -c "wget -q -O- http://$container_ipv4:24678/ipv6" &>/dev/null; then
-                log_success "容器 $container /ipv6 端点 (IPv4) 可达"
-                test_passed=true
-            else
-                log_warning "容器 $container /ipv6 端点 (IPv4) 不可达"
-            fi
-        fi
-
-        if [ "$test_passed" = false ]; then
-            local container_ipv6=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "$container" 2>/dev/null)
-            if [ -n "$container_ipv6" ]; then
-                if docker run --rm --network "$net_name" alpine sh -c "wget -q -O- http://[$container_ipv6]:24678/ipv6" &>/dev/null; then
-                    log_success "容器 $container /ipv6 端点 (IPv6) 可达"
-                    test_passed=true
-                else
-                    log_warning "容器 $container /ipv6 端点 (IPv6) 不可达"
-                fi
-            fi
-        fi
-
-        if [ "$test_passed" = false ]; then
-            log_warning "容器 $container /ipv6 端点不可达，执行修复（删除容器并重建网络）..."
-            
-            docker rm -f "$container" 2>/dev/null || true
-            docker rm -f "$socks5_container" 2>/dev/null || true
-            log_info "已删除容器: $container, $socks5_container"
-            
-            create_macvlan_network "$net_name" "$iface" "$subnet" "$gw" "$ipv6_prefix"
-            
-            deploy_main_container "$net_name" "$rport" "$gw"
-            deploy_socks5_container "$net_name" "$rport" "$sport" "$iface"
-            
-            container_ipv4=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$container" 2>/dev/null)
-            if [ -n "$container_ipv4" ] && docker run --rm --network "$net_name" alpine sh -c "wget -q -O- http://$container_ipv4:24678/ipv6" &>/dev/null; then
-                log_success "修复后容器 $container /ipv6 端点可达"
-            else
-                log_error "修复后仍不可达，请手动检查"
-            fi
-        fi
-    done
-
-    for c in $(docker ps -a --format '{{.Names}}' | grep -E 'psyduck[0-9]+-socks5|psyduck-ssh'); do
-        docker restart "$c" 2>/dev/null
-    done
-    log_success "快速检查完成"
-}
-
-# ==================== 19. 维护脚本生成（MODIFIED） ====================
+# ==================== 16. 维护脚本生成（只重启主容器） ====================
 generate_maintenance_script() {
     cat > "$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
 LOG="/var/log/psyduck_maintenance.log"
-echo "$(date) 开始维护：重启 Docker 服务" >> "$LOG"
-systemctl restart docker
-sleep 5
-if docker ps -a --format '{{.Names}}' | grep -q '^psyduck'; then
-    echo "$(date) Docker 重启完成，容器已自动恢复" >> "$LOG"
-else
-    echo "$(date) 警告：未发现 psyduck 容器，请检查" >> "$LOG"
-fi
+echo "$(date) 开始维护：重启主容器" >> "$LOG"
+for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$'); do
+    docker restart "$c" >> "$LOG" 2>&1
+done
 echo "$(date) 维护完成" >> "$LOG"
 EOF
     chmod +x "$SCRIPT_PATH"
-    log_success "维护脚本生成（每天重启 Docker）"
+    log_success "维护脚本生成（每天重启主容器）"
 }
 
-# ==================== 20. systemd timer 设置 ====================
+# ==================== 17. systemd timer 设置 ====================
 setup_systemd_timer() {
     local service_name="psyduck-maintenance.service"
     local timer_name="psyduck-maintenance.timer"
@@ -1222,26 +1034,6 @@ EOF
     log_success "systemd timer 已启用（每天 03:00 执行）"
 }
 
-# ==================== 21. 开机自启 ====================
-setup_autostart() {
-    local f="/etc/systemd/system/psyduck-boot.service"
-    cat > "$f" <<EOF
-[Unit]
-Description=Psyduck Boot Check
-After=network.target docker.service
-Requires=docker.service
-[Service]
-Type=oneshot
-ExecStart=$(realpath "$0") --check
-RemainAfterExit=yes
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable psyduck-boot.service 2>/dev/null || true
-    log_success "开机自启已配置"
-}
-
 # ==================== 命令行参数处理 ====================
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1254,7 +1046,7 @@ done
 # ==================== 主入口 ====================
 main() {
     if [ "$CHECK_MODE" = true ]; then
-        quick_check
+        log_info "健康检查模式已移除，请使用 --debug 重新部署"
         exit 0
     fi
 
@@ -1262,22 +1054,15 @@ main() {
 
     if [ "$DEBUG_MODE" = true ]; then
         log_warning "调试模式：将重新部署所有容器（SSH 容器会保留）"
-        if ! fetch_fastest_proxy_from_report; then
-            log_error "无法获取代理，部署中止"
-            exit 1
-        fi
         deploy_all
         exit 0
     fi
 
     if [ -f "$DEPLOY_FLAG" ]; then
-        quick_check
+        log_info "已部署，无需重复执行。如需重新部署，请使用 --debug"
+        exit 0
     else
-        log_info "首次部署，正在获取最快代理..."
-        if ! fetch_fastest_proxy_from_report; then
-            log_error "无法获取代理，部署中止"
-            exit 1
-        fi
+        log_info "首次部署，开始执行..."
         deploy_all
     fi
 }
