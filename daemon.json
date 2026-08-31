@@ -1,7 +1,7 @@
 {
   "registry-mirrors": [
-    "https://docker-registry.nmqu.com",
     "https://docker.m.daocloud.io",
-    "https://hub1.nat.tf"
+    "https://docker-registry.nmqu.com",
+    "https://dockerproxy.net"
   ]
 }
