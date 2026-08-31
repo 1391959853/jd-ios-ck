@@ -1,14 +1,14 @@
 GitHub 镜像下载速度测试 (SOCKS5 代理)
 ============================================================
 SOCKS5 代理：1.sggg3326.top:6005
-测试时间：2026-08-30 07:39:01
+测试时间：2026-08-31 07:52:27
 测试文件：https://github.com/git/git/archive/refs/tags/v2.43.0.tar.gz
 超时时间：600 秒
 ============================================================
 
 排名 | 地址 | 耗时 | 大小 | 速度 | 状态
 ------------------------------------------------------------
-   1 | https://gh-proxy.com/ | 6.3s | 10.5MB | 13.8Mbps | 成功
-   2 | https://gh.404cafe.fun/ | 12.4s | 10.5MB | 7.1Mbps | 成功
-   3 | https://ghfast.top/ | 13.0s | 10.5MB | 6.7Mbps | 成功
-   4 | https://ghproxy.cc/ | 17.7s | 10.5MB | 5.0Mbps | 成功
+   1 | https://gh-proxy.com/ | 6.7s | 10.5MB | 13.1Mbps | 成功
+   2 | https://gh.404cafe.fun/ | 11.5s | 10.5MB | 7.7Mbps | 成功
+   3 | https://ghfast.top/ | 14.8s | 10.5MB | 5.9Mbps | 成功
+   4 | https://ghproxy.cc/ | 17.4s | 10.5MB | 5.0Mbps | 成功
