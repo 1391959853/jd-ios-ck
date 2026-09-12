@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.4
+# 版本：10.5
 # ============================================
 set -euo pipefail
 
@@ -846,26 +846,22 @@ select_deployment_mode() {
     done
     [ ${#online[@]} -eq 0 ] && { log_error "无可用 IPv6 网卡"; exit 1; }
 
+    # 读旧配置（子 shell 隔离解析，避免 eval 引号冲突）
     local old_selected=()
     local old_networks=()
     if [ -f "$CONFIG_FILE" ]; then
-        local line
-        while IFS= read -r line; do
-            case "$line" in
-                SELECTED_INTERFACES=*)
-                    local _arr=()
-                    eval "_arr=(${line#SELECTED_INTERFACES=})"
-                    old_selected=("${_arr[@]}")
-                    ;;
-                NETWORKS=*)
-                    local _arr2=()
-                    eval "_arr2=(${line#NETWORKS=})"
-                    old_networks=("${_arr2[@]}")
-                    ;;
-            esac
-        done < "$CONFIG_FILE"
+        local _sel_str _net_str _l
+        _sel_str=$(bash -c 'source "$1" 2>/dev/null; printf "%s\n" "${SELECTED_INTERFACES[@]}"' _ "$CONFIG_FILE" || true)
+        _net_str=$(bash -c 'source "$1" 2>/dev/null; printf "%s\n" "${NETWORKS[@]}"' _ "$CONFIG_FILE" || true)
+        while IFS= read -r _l; do
+            [ -n "$_l" ] && old_selected+=("$_l")
+        done <<< "$_sel_str"
+        while IFS= read -r _l; do
+            [ -n "$_l" ] && old_networks+=("$_l")
+        done <<< "$_net_str"
     fi
 
+    # 分类
     local keep_ifaces=() failed_ifaces=() new_ifaces=()
     local old cur found
     for old in "${old_selected[@]}"; do
@@ -879,6 +875,7 @@ select_deployment_mode() {
         [ "$found" = false ] && new_ifaces+=("$cur")
     done
 
+    # 删失效
     local iface entry
     for iface in "${failed_ifaces[@]}"; do
         for entry in "${old_networks[@]}"; do
@@ -902,6 +899,7 @@ select_deployment_mode() {
         done
     done
 
+    # 决定模式
     if [ ${#old_selected[@]} -eq 0 ]; then
         if [ ${#online[@]} -eq 1 ]; then
             DEPLOY_MODE="single"
