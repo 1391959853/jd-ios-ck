@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.1
+# 版本：10.2
 # ============================================
 set -euo pipefail
 
@@ -74,9 +74,9 @@ get_physical_ifaces() {
 get_iface_info() {
     local iface=$1
     local ip subnet gw
-    ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    ip=$(ip -4 addr show "$iface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1 || true)
     subnet=$(echo "$ip" | awk -F. '{print $1"."$2"."$3".0/24"}')
-    gw=$(ip route | grep "default" | grep "$iface" | awk '{print $3}')
+    gw=$(ip route | grep "default" | grep "$iface" | awk '{print $3}' || true)
     [ -z "$gw" ] && gw=$(echo "$ip" | awk -F. '{print $1"."$2"."$3".1"}')
     echo "$ip|$subnet|$gw"
 }
@@ -97,31 +97,31 @@ check_iface_ipv6() {
 
 # ==================== 1. APT 源 ====================
 get_distro_info() {
-    local DISTRO_ID="" DISTRO_CODENAME=""
+    local distro_id="" distro_codename=""
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        DISTRO_ID="$ID"
-        DISTRO_CODENAME="$VERSION_CODENAME"
-        if [ -z "$DISTRO_CODENAME" ]; then
+        distro_id="$ID"
+        distro_codename="$VERSION_CODENAME"
+        if [ -z "$distro_codename" ]; then
             if [[ "$VERSION" =~ \([a-z]+\) ]]; then
-                DISTRO_CODENAME="${BASH_REMATCH[1]}"
+                distro_codename="${BASH_REMATCH[1]}"
             else
                 case "$ID" in
-                    debian) DISTRO_CODENAME=$(echo "$VERSION" | awk '{print $1}' | tr -d '()') ;;
-                    ubuntu) DISTRO_CODENAME=$(echo "$VERSION" | awk '{print $2}' | tr -d '()') ;;
+                    debian) distro_codename=$(echo "$VERSION" | awk '{print $1}' | tr -d '()') ;;
+                    ubuntu) distro_codename=$(echo "$VERSION" | awk '{print $2}' | tr -d '()') ;;
                 esac
             fi
         fi
     elif [ -f /etc/lsb-release ]; then
         . /etc/lsb-release
-        DISTRO_ID="$DISTRIB_ID"
-        DISTRO_CODENAME="$DISTRIB_CODENAME"
+        distro_id="$DISTRIB_ID"
+        distro_codename="$DISTRIB_CODENAME"
     else
         log_error "无法识别系统发行版"; exit 1
     fi
-    DISTRO_ID=$(echo "$DISTRO_ID" | tr '[:upper:]' '[:lower:]')
-    DISTRO_CODENAME=$(echo "$DISTRO_CODENAME" | tr '[:upper:]' '[:lower:]')
-    echo "$DISTRO_ID|$DISTRO_CODENAME"
+    distro_id=$(echo "$distro_id" | tr '[:upper:]' '[:lower:]')
+    distro_codename=$(echo "$distro_codename" | tr '[:upper:]' '[:lower:]')
+    echo "$distro_id|$distro_codename"
 }
 
 check_and_set_mirrors() {
@@ -815,20 +815,28 @@ select_deployment_mode() {
     done
     [ ${#online[@]} -eq 0 ] && { log_error "无可用 IPv6 网卡"; exit 1; }
 
-    # 读旧配置（局部变量，不污染全局）
+    # 读旧配置
     local old_selected=()
     local old_networks=()
     if [ -f "$CONFIG_FILE" ]; then
-        local _arr=() line
+        local line
         while IFS= read -r line; do
             case "$line" in
-                SELECTED_INTERFACES=*) eval "_arr=(${line#SELECTED_INTERFACES=})" ; old_selected=("${_arr[@]}") ;;
-                NETWORKS=*)            eval "_arr=(${line#NETWORKS=})" ; old_networks=("${_arr[@]}") ;;
+                SELECTED_INTERFACES=*)
+                    local _arr=()
+                    eval "_arr=(${line#SELECTED_INTERFACES=})"
+                    old_selected=("${_arr[@]}")
+                    ;;
+                NETWORKS=*)
+                    local _arr2=()
+                    eval "_arr2=(${line#NETWORKS=})"
+                    old_networks=("${_arr2[@]}")
+                    ;;
             esac
         done < "$CONFIG_FILE"
     fi
 
-    # 分类：保留 / 失效 / 新增
+    # 分类
     local keep_ifaces=() failed_ifaces=() new_ifaces=()
     local old cur found
     for old in "${old_selected[@]}"; do
@@ -842,7 +850,7 @@ select_deployment_mode() {
         [ "$found" = false ] && new_ifaces+=("$cur")
     done
 
-    # 删失效网卡
+    # 删失效
     local iface entry
     for iface in "${failed_ifaces[@]}"; do
         for entry in "${old_networks[@]}"; do
@@ -866,7 +874,7 @@ select_deployment_mode() {
         done
     done
 
-    # 决定部署模式
+    # 决定模式
     if [ ${#old_selected[@]} -eq 0 ]; then
         if [ ${#online[@]} -eq 1 ]; then
             DEPLOY_MODE="single"
@@ -874,13 +882,13 @@ select_deployment_mode() {
         else
             echo -e "${CYAN}检测到多个可用 IPv6 网卡，请选择：\n 1) 单网口\n 2) 多网口${NC}"
             local choice
-            read -p "请输入 1 或 2 [默认1]: " choice
+            read -p "请输入 1 或 2 [默认1]: " choice < /dev/tty || choice="1"
             if [ "$choice" = "2" ]; then
                 DEPLOY_MODE="multi"
                 local j
                 for j in "${!online[@]}"; do echo " $((j+1))) ${online[$j]}"; done
                 local sel
-                read -p "选择编号（如 1 2 3 或 all）: " sel
+                read -p "选择编号（如 1 2 3 或 all）: " sel < /dev/tty || sel="all"
                 if [ "$sel" = "all" ]; then
                     SELECTED_INTERFACES=("${online[@]}")
                 else
@@ -926,7 +934,11 @@ configure_ports() {
         else
             echo -e "${CYAN}为网卡 $iface 设置主容器端口:${NC}"
             local p
-            read -p "主容器端口: " p
+            while true; do
+                read -p "主容器端口: " p < /dev/tty || { log_error "读取输入失败"; exit 1; }
+                if [ -n "$p" ]; then break; fi
+                log_warning "端口不能为空，请重新输入"
+            done
             REMOTE_PORTS+=("$p")
         fi
     done
@@ -948,7 +960,7 @@ detect_and_save_config() {
         rport="${REMOTE_PORTS[$idx]}"
         sport=$((rport + 1000))
 
-        # 从旧配置找 net_name（保留原命名）
+        # 从旧配置找 net_name
         local net_name=""
         local entry
         for entry in "${OLD_NETWORKS[@]}"; do
@@ -969,7 +981,7 @@ detect_and_save_config() {
                 for un in "${used_names[@]}"; do
                     [ "$un" = "$candidate" ] && taken=true
                 done
-                [ "$taken" = false ] && { net_name="$candidate"; break; }
+                if [ "$taken" = false ]; then net_name="$candidate"; break; fi
                 n=$((n + 1))
             done
         fi
@@ -989,13 +1001,19 @@ detect_and_save_config() {
         net_entries+=("$net_name|$iface|$subnet|$gw|$rport|$sport|$ipv6_prefix")
     done
 
-    cat > "$CONFIG_FILE" <<EOF
-DEPLOY_MODE=$DEPLOY_MODE
-SELECTED_INTERFACES=(${SELECTED_INTERFACES[*]})
-REMOTE_PORTS=(${REMOTE_PORTS[*]})
-SOCKS5_PORTS=(${SOCKS5_PORTS[*]})
-NETWORKS=(${net_entries[*]})
-EOF
+    {
+        echo "DEPLOY_MODE=$DEPLOY_MODE"
+        echo "SELECTED_INTERFACES=(${SELECTED_INTERFACES[*]})"
+        echo "REMOTE_PORTS=(${REMOTE_PORTS[*]})"
+        echo "SOCKS5_PORTS=(${SOCKS5_PORTS[*]})"
+        printf 'NETWORKS=('
+        local i
+        for i in "${!net_entries[@]}"; do
+            [ "$i" -gt 0 ] && printf ' '
+            printf '"%s"' "${net_entries[$i]}"
+        done
+        echo ')'
+    } > "$CONFIG_FILE"
     write_config_snapshot
     log_success "配置已保存到 $CONFIG_FILE"
 }
@@ -1003,10 +1021,13 @@ EOF
 # ==================== 13. macvlan 网络 ====================
 create_macvlan_network() {
     local net_name=$1 iface=$2 subnet=$3 gw=$4 ipv6_prefix=$5
+    if docker network ls --format '{{.Name}}' | grep -qx "$net_name"; then
+        log_info "网络 $net_name 已存在，跳过创建"
+        return 0
+    fi
     if [[ "$ipv6_prefix" =~ : ]]; then
         ipv6_prefix=$(echo "$ipv6_prefix" | cut -d':' -f1-2 | tr -d ':')
     fi
-    docker network rm -f "$net_name" 2>/dev/null || true
     docker network create -d macvlan \
         --subnet="$subnet" \
         --gateway="$gw" \
@@ -1272,7 +1293,11 @@ main() {
     log_step "重启所有非 SSH 容器以确保配置生效..."
     local c
     for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck' | grep -vE '^psyduck-ssh' || true); do
-        docker restart "$c" &>/dev/null && log_info "已重启 $c" || log_warning "重启 $c 失败"
+        if docker restart "$c" &>/dev/null; then
+            log_info "已重启 $c"
+        else
+            log_warning "重启 $c 失败"
+        fi
     done
 
     generate_maintenance_script
