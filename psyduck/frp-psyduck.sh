@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.2
+# 版本：10.3
 # ============================================
 set -euo pipefail
 
@@ -725,9 +725,9 @@ clean_all_containers() {
 
     local pattern
     if [ "$keep_ssh" = true ]; then
-        pattern='^psyduck[0-9]+$|^psyduck-socks5[0-9]+$'
+        pattern='^psyduck[0-9]+$|^psyduck[0-9]+-socks5$'
     else
-        pattern='^psyduck[0-9]+$|^psyduck-socks5[0-9]+$|^psyduck-ssh[0-9]+$'
+        pattern='^psyduck[0-9]+$|^psyduck[0-9]+-socks5$|^psyduck[0-9]+-ssh$'
     fi
 
     local c
@@ -858,7 +858,7 @@ select_deployment_mode() {
             IFS='|' read -r e_net e_iface _ _ e_rport _ _ <<< "$entry"
             if [ "$e_iface" = "$iface" ]; then
                 local c
-                for c in "psyduck${e_rport}" "psyduck-socks5${e_rport}" "psyduck-ssh${e_rport}"; do
+                for c in "psyduck${e_rport}" "psyduck${e_rport}-socks5" "psyduck${e_rport}-ssh"; do
                     if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
                         docker stop "$c" &>/dev/null || true
                         docker rm "$c" &>/dev/null || true
@@ -960,7 +960,6 @@ detect_and_save_config() {
         rport="${REMOTE_PORTS[$idx]}"
         sport=$((rport + 1000))
 
-        # 从旧配置找 net_name
         local net_name=""
         local entry
         for entry in "${OLD_NETWORKS[@]}"; do
@@ -969,7 +968,6 @@ detect_and_save_config() {
             if [ "$e_iface" = "$iface" ]; then net_name="$e_net"; break; fi
         done
 
-        # 新增网卡：从 psyduck 找第一个空缺
         if [ -z "$net_name" ]; then
             local n=0 candidate
             while true; do
@@ -1056,7 +1054,7 @@ server_port = ${DEFAULT_SERVER_PORT}
 token = ${DEFAULT_TOKEN}
 tls_enable = true
 
-[${container_name}]
+[psyduck${remote_port}]
 type = http
 local_ip = 127.0.0.1
 local_port = 80
@@ -1074,7 +1072,7 @@ EOF
 # ==================== 15. SOCKS5 容器 ====================
 deploy_socks5_container() {
     local net_name=$1 rport=$2 sport=$3
-    local container_name="psyduck-socks5${rport}"
+    local container_name="psyduck${rport}-socks5"
 
     if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
         log_info "SOCKS5 容器 $container_name 已存在"
@@ -1091,7 +1089,7 @@ server_port = ${DEFAULT_SERVER_PORT}
 token = ${DEFAULT_TOKEN}
 tls_enable = true
 
-[${container_name}]
+[psyduck${rport}-socks5]
 type = tcp
 local_ip = 127.0.0.1
 local_port = 2233
@@ -1112,7 +1110,7 @@ EOF
 deploy_ssh_container() {
     local rport=$1
     local ssh_rport=$((rport + 2000))
-    local container_name="psyduck-ssh${rport}"
+    local container_name="psyduck${rport}-ssh"
 
     if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
         log_info "SSH 容器 $container_name 已存在"
@@ -1129,7 +1127,7 @@ server_port = ${DEFAULT_SERVER_PORT}
 token = ${DEFAULT_TOKEN}
 tls_enable = true
 
-[ssh_${ssh_rport}]
+[psyduck${rport}-ssh]
 type = tcp
 local_ip = 127.0.0.1
 local_port = 22
@@ -1151,7 +1149,7 @@ generate_maintenance_script() {
 source /opt/psyduck/psyduck.conf
 
 for c in $(docker ps -a --format '{{.Names}}' \
-    | grep -E '^psyduck[0-9]+$|^psyduck-socks5[0-9]+$'); do
+    | grep -E '^psyduck[0-9]+$|^psyduck[0-9]+-socks5$'); do
     if docker restart "$c" &>/dev/null; then
         echo "[$(date '+%F %T')] 已重启 $c"
     else
@@ -1292,7 +1290,7 @@ main() {
 
     log_step "重启所有非 SSH 容器以确保配置生效..."
     local c
-    for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck' | grep -vE '^psyduck-ssh' || true); do
+    for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$|^psyduck[0-9]+-socks5$' || true); do
         if docker restart "$c" &>/dev/null; then
             log_info "已重启 $c"
         else
