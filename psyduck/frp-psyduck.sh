@@ -1089,7 +1089,7 @@ EOF
     docker run -d --name "$container_name" \
         --restart unless-stopped \
         --network "$net_name" \
-        -v "$tmp:/app/frpc.ini" \
+        -v "$tmp:/root/frpc.ini" \
         psyduck
     log_success "主容器 $container_name 已启动"
 }
