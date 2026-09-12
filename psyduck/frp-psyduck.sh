@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.3
+# 版本：10.4
 # ============================================
 set -euo pipefail
 
@@ -93,6 +93,22 @@ check_iface_ipv6() {
         esac
     done
     return 1
+}
+
+# ==================== 镜像版本检查 ====================
+socks5_image_ok() {
+    docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$" || return 1
+    local img_frp img_gost
+    img_frp=$(docker inspect -f '{{index .Config.Labels "frp_version"}}' psyduck-socks5 2>/dev/null || echo "")
+    img_gost=$(docker inspect -f '{{index .Config.Labels "gost_version"}}' psyduck-socks5 2>/dev/null || echo "")
+    [ "$img_frp" = "$FRP_VERSION" ] && [ "$img_gost" = "$GOST_VERSION" ]
+}
+
+ssh_image_ok() {
+    docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$" || return 1
+    local img_frp
+    img_frp=$(docker inspect -f '{{index .Config.Labels "frp_version"}}' psyduck-ssh 2>/dev/null || echo "")
+    [ "$img_frp" = "$FRP_VERSION" ]
 }
 
 # ==================== 1. APT 源 ====================
@@ -469,8 +485,15 @@ test_alpine_mirrors() {
 # ==================== 7. 构建 SOCKS5 镜像 ====================
 build_socks5_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$"; then
-        log_success "SOCKS5 镜像已存在"
-        return
+        if socks5_image_ok; then
+            log_success "SOCKS5 镜像已存在且版本匹配"
+            return
+        fi
+        local img_frp img_gost
+        img_frp=$(docker inspect -f '{{index .Config.Labels "frp_version"}}' psyduck-socks5 2>/dev/null || echo "未知")
+        img_gost=$(docker inspect -f '{{index .Config.Labels "gost_version"}}' psyduck-socks5 2>/dev/null || echo "未知")
+        log_warning "SOCKS5 镜像版本不匹配（镜像 frp=$img_frp gost=$img_gost，期望 frp=$FRP_VERSION gost=$GOST_VERSION），自动重建"
+        docker rmi -f psyduck-socks5 2>/dev/null || true
     fi
 
     log_step "构建 SOCKS5 镜像..."
@@ -591,6 +614,7 @@ build_socks5_image() {
 
     cat > Dockerfile <<EOF
 FROM alpine:3.19
+LABEL frp_version="${FRP_VERSION}" gost_version="${GOST_VERSION}"
 RUN sed -i 's#dl-cdn.alpinelinux.org#${FASTEST_ALPINE_MIRROR}#g' /etc/apk/repositories
 RUN apk add --no-cache ca-certificates
 ${frp_line}
@@ -679,8 +703,14 @@ EOF
 # ==================== 8. 构建 SSH 镜像 ====================
 build_ssh_image() {
     if docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$"; then
-        log_success "SSH 镜像已存在"
-        return
+        if ssh_image_ok; then
+            log_success "SSH 镜像已存在且版本匹配"
+            return
+        fi
+        local img_frp
+        img_frp=$(docker inspect -f '{{index .Config.Labels "frp_version"}}' psyduck-ssh 2>/dev/null || echo "未知")
+        log_warning "SSH 镜像版本不匹配（镜像 frp=$img_frp，期望 frp=$FRP_VERSION），自动重建"
+        docker rmi -f psyduck-ssh 2>/dev/null || true
     fi
 
     log_step "构建 SSH 镜像..."
@@ -698,6 +728,7 @@ build_ssh_image() {
 
     cat > Dockerfile <<EOF
 FROM alpine:3.19
+LABEL frp_version="${FRP_VERSION}"
 RUN sed -i 's#dl-cdn.alpinelinux.org#${FASTEST_ALPINE_MIRROR}#g' /etc/apk/repositories
 RUN apk add --no-cache ca-certificates tzdata
 RUN mkdir -p /app
@@ -815,7 +846,6 @@ select_deployment_mode() {
     done
     [ ${#online[@]} -eq 0 ] && { log_error "无可用 IPv6 网卡"; exit 1; }
 
-    # 读旧配置
     local old_selected=()
     local old_networks=()
     if [ -f "$CONFIG_FILE" ]; then
@@ -836,7 +866,6 @@ select_deployment_mode() {
         done < "$CONFIG_FILE"
     fi
 
-    # 分类
     local keep_ifaces=() failed_ifaces=() new_ifaces=()
     local old cur found
     for old in "${old_selected[@]}"; do
@@ -850,7 +879,6 @@ select_deployment_mode() {
         [ "$found" = false ] && new_ifaces+=("$cur")
     done
 
-    # 删失效
     local iface entry
     for iface in "${failed_ifaces[@]}"; do
         for entry in "${old_networks[@]}"; do
@@ -874,7 +902,6 @@ select_deployment_mode() {
         done
     done
 
-    # 决定模式
     if [ ${#old_selected[@]} -eq 0 ]; then
         if [ ${#online[@]} -eq 1 ]; then
             DEPLOY_MODE="single"
@@ -1240,10 +1267,8 @@ main() {
     fi
 
     if [ "$DEBUG_MODE" = true ]; then
-        log_warning "调试模式：删除除 SSH 外的所有容器与网络，重建 SOCKS5 镜像并清空缓存"
+        log_warning "调试模式：删除除 SSH 外的所有容器与网络"
         clean_all_containers true
-        docker rmi -f psyduck-socks5 2>/dev/null || true
-        rm -rf /opt/psyduck/bin/* 2>/dev/null || true
     fi
 
     log_step "开始完整部署"
@@ -1254,12 +1279,12 @@ main() {
     clone_and_build_main
 
     local need_build=false
-    docker images --format "{{.Repository}}" | grep -q "^psyduck-socks5$" || need_build=true
-    docker images --format "{{.Repository}}" | grep -q "^psyduck-ssh$" || need_build=true
+    socks5_image_ok || need_build=true
+    ssh_image_ok || need_build=true
     if [ "$need_build" = true ]; then
         test_alpine_mirrors
     else
-        log_info "SOCKS5 和 SSH 镜像均已存在，跳过 Alpine 源测速"
+        log_info "SOCKS5 和 SSH 镜像均已存在且版本匹配，跳过 Alpine 源测速"
     fi
     build_socks5_image
     build_ssh_image
