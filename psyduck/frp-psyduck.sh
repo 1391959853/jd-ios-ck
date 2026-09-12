@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.5
+# 版本：10.6
 # ============================================
 set -euo pipefail
 
@@ -1080,9 +1080,9 @@ token = ${DEFAULT_TOKEN}
 tls_enable = true
 
 [psyduck${remote_port}]
-type = http
+type = tcp
 local_ip = 127.0.0.1
-local_port = 80
+local_port = 24678
 remote_port = ${remote_port}
 EOF
 
@@ -1228,15 +1228,9 @@ verify_main_containers() {
 
     local c
     for c in $main_containers; do
-        local ip
-        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$c" 2>/dev/null || echo "")
-        if [ -z "$ip" ]; then
-            log_warning "容器 $c 无法获取 IP"
-            continue
-        fi
         local ok=false i
         for i in 1 2 3; do
-            if docker exec "$c" curl -fsS --max-time 5 "http://$ip/ipv6" &>/dev/null; then
+            if docker exec "$c" curl -fsS --max-time 5 "http://127.0.0.1:24678/ipv6" &>/dev/null; then
                 ok=true; break
             fi
             sleep 3
