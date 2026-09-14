@@ -5,7 +5,7 @@
  * 版本:9.7（新增：提交前对 pt_pin 进行 URL 编码）
  */
 
-const API_URL = "http://1.sggg3326.top:9090/jd/raw_ck";
+const API_URL = "http://nezha.sggg3326.top:9090/jd/raw_ck";
 
 let cookie = $request.headers['Cookie'] || $request.headers['cookie'];
 let requestUrl = $request.url || '';
