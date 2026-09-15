@@ -298,11 +298,12 @@ function submitToAPI(pt_pin, pt_key, wskey, cookie, pin_hash) {
         headers: { 'Content-Type': 'application/json' },
         // ↓↓↓ 修改点：对 pt_pin 进行 URL 编码后再提交 ↓↓↓
         body: JSON.stringify({ 
-            pt_key, 
-            pt_pin: encodeURIComponent(pt_pin),   // 新增编码
-            wskey: wskey || '', 
-            cookie 
-        }),
+    pt_key, 
+    pt_pin: encodeURIComponent(pt_pin),
+    wskey: wskey || '', 
+    cookie,
+    pin_hash: pin_hash || ''
+}),
         timeout: 10000
     };
 
