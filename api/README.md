@@ -1,64 +1,61 @@
-# 🔧 服务端 API
+# JD Cookie API
 
-Flask API - 接收 iOS Cookie 并同步到青龙
+## 功能
+接收客户端提交的 `pt_key` / `pt_pin` / `wskey` / `pin_hash`，按
+`pt_pin + pin_hash` 命中缓存则跳过 JD 转换，否则走 `genToken + appjmp`
+换 `pt_key`。两条路都会写青龙（`JD_COOKIE` + `JD_WSCK`）。
 
----
+## 接口
+### `GET /health`
+返回：`{"status":"ok","qinglong_connected":true}`
 
-## ⚡ 快速部署
-
-### Docker
-
-```bash
-docker-compose up -d
-```
-
-### 直接运行
-
-```bash
-pip install -r requirements.txt
-python3 app.py
-```
-
----
-
-## 🔧 配置
-
-编辑 `app.py`：
-
-```python
-# 第 30 行
-QL_BASE_URL = "http://青龙地址：5700"
-QL_CLIENT_ID = "你的 ID"
-QL_CLIENT_SECRET = "你的 KEY"
-```
-
----
-
-## 📡 API 接口
-
-### POST /jd/raw_ck
-
+### `POST /jd/raw_ck`
+请求体（JSON）：
 ```json
 {
-  "pt_key": "xxx",
-  "pt_pin": "xxx",
-  "wskey": "xxx"
+  "pt_key":   "app_openAAJ...",
+  "pt_pin":   "jd_xxx",
+  "wskey":    "AAJ...",
+  "pin_hash": "1987555117",
+  "cookie":   "pt_key=...;pt_pin=...;"      // 可选，服务端不用
 }
 ```
 
-**响应**:
-```json
-{"code": 200, "match": true, "synced": true}
+**成功响应**（HTTP 200，纯文本）：
+```
+ok
+账号：jd_xxx
+时间：2026-09-15 20:28:27
+IP：1.2.3.4
 ```
 
----
+**失败响应**（HTTP 200，纯文本）：
+```
+校验失败，京东账号: jd_xxx
+```
 
-## ❓ 故障排查
+客户端判据：`body.includes("ok")` / `body.startsWith("校验失败，京东账号: ")`
 
-| 问题 | 解决 |
-|------|------|
-| 青龙连接失败 | 检查 URL 和凭证 |
-| 转换失败 | 测试代理节点 |
-| API 无法访问 | 检查端口 9090 |
+## 部署
+```bash
+mkdir -p data
+docker-compose up -d --build
+docker-compose logs -f
+```
 
-**详细**: [查看完整文档](./README.md#故障排查)
+## 配置
+配置**硬编码**在 `app.py` 顶部，不使用环境变量。
+
+## 网络
+- 容器使用 `network_mode: host`
+- 青龙：`http://127.0.0.1:5700`
+- FRPS：`http://127.0.0.1:7500/api/proxy/tcp`
+- 监听：`0.0.0.0:9090`
+
+## 缓存
+- 文件：`./data/success_cache.json`
+- 格式：`{ "pt_pin": "pin_hash" }`
+- 命中条件：`pt_pin` 存在且 `pin_hash` 相同
+- 无过期时间，同 key 覆盖
+
+架构见 [ARCHITECTURE.md](./ARCHITECTURE.md)
