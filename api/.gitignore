@@ -1,28 +1,7 @@
-# Python
+api/data/
+*.log
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-*.egg-info/
-*.egg
-
-# 数据文件
-data/*.json
-logs/*.log
-
-# 环境变量
-# 无 .env 文件，配置直接写在 app.py 中
-
-# IDE
+.DS_Store
 .vscode/
 .idea/
-*.swp
-*.swo
-
-# 系统文件
-.DS_Store
-Thumbs.db
