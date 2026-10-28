@@ -257,7 +257,7 @@ deb http://security.ubuntu.com/ubuntu $distro_codename-security main restricted 
         *)
             new_sources="deb http://$mirror/debian bookworm main contrib non-free
 deb http://$mirror/debian bookworm-updates main contrib non-free
-deb http://security.debian.org/debian-security bookworm-cert main contrib non-free"
+deb http://security.debian.org/debian-security bookworm-security main contrib non-free"
             ;;
     esac
 
@@ -459,10 +459,14 @@ clone_and_build_main() {
     local repo="https://github.com/xoyoxoyo/relayApi.git"
     local proxy_flag=""
     [ -n "$GITHUB_PROXY_PREFIX" ] && proxy_flag="-c url.${GITHUB_PROXY_PREFIX}https://github.com/.insteadOf=https://github.com/"
+    
+    # 确保配置目录存在
+    mkdir -p "$CONFIG_DIR"
+    local repo_dir="${CONFIG_DIR}/relayApi"
 
-    if [ -d relayApi ]; then
+    if [ -d "$repo_dir" ]; then
         log_info "更新仓库..."
-        cd relayApi
+        cd "$repo_dir"
         normalize_origin_url
         if ! timeout 180 git $proxy_flag pull; then
             log_warning "git pull 超时，3 秒后重试..."
@@ -471,17 +475,17 @@ clone_and_build_main() {
         fi
         cd ..
     else
-        log_info "克隆仓库（3 分钟超时）..."
-        if ! timeout 180 git $proxy_flag clone "$repo" relayApi; then
+        log_info "克隆仓库（3 分钟超时）到 $repo_dir ..."
+        if ! timeout 180 git $proxy_flag clone "$repo" "$repo_dir"; then
             log_warning "代理克隆失败，尝试直连..."
-            timeout 180 git clone "$repo" relayApi || { log_error "克隆失败"; exit 1; }
+            timeout 180 git clone "$repo" "$repo_dir" || { log_error "克隆失败"; exit 1; }
         fi
-        cd relayApi
+        cd "$repo_dir"
         normalize_origin_url
         cd ..
     fi
 
-    cd relayApi
+    cd "$repo_dir"
     if [ -f "psyduck" ] && [ -x "psyduck" ]; then
         log_success "psyduck 二进制已存在"
     else
@@ -586,10 +590,9 @@ build_socks5_image() {
         *) log_error "不支持的架构：$arch"; exit 1 ;;
     esac
 
-    local LOCAL_BIN_DIR="/opt/psyduck/bin"
+    local LOCAL_BIN_DIR="${CONFIG_DIR}/bin"
     mkdir -p "$LOCAL_BIN_DIR"
 
-    # --- frpc ---
     local frpc_ok=false
     if [ -x "$LOCAL_BIN_DIR/frpc" ]; then
         local cur_ver
@@ -634,7 +637,6 @@ build_socks5_image() {
         fi
     fi
 
-    # --- gost ---
     local gost_ok=false
     if [ -x "$LOCAL_BIN_DIR/gost" ]; then
         local cur_ver
@@ -679,7 +681,6 @@ build_socks5_image() {
         log_success "gost 已下载"
     fi
 
-    # --- 构建 ---
     local tmpd; tmpd=$(mktemp -d)
     cd "$tmpd"
     cp "$LOCAL_BIN_DIR/gost" .
@@ -706,41 +707,33 @@ EOF
 
     cat > start.sh <<'EOF'
 #!/bin/sh
-
 MAX_RESTART=5
 BASE_BACKOFF=2
 STABLE_SECONDS=60
-
 GOST_PID=""
 FRPC_PID=""
 GOST_RESTARTS=0
 FRPC_RESTARTS=0
 GOST_START_TS=0
 FRPC_START_TS=0
-
 now_ts() { date +%s; }
-
 start_gost() {
     /usr/bin/gost -L "socks5://${SOCKS5_USER}:${SOCKS5_PASS}@:2233" &
     GOST_PID=$!
     GOST_START_TS=$(now_ts)
 }
-
 start_frpc() {
     /usr/bin/frpc -c /app/frpc.ini &
     FRPC_PID=$!
     FRPC_START_TS=$(now_ts)
 }
-
 cleanup() {
     kill "$GOST_PID" "$FRPC_PID" 2>/dev/null || true
     exit 0
 }
 trap cleanup TERM INT
-
 start_gost
 start_frpc
-
 while true; do
     if ! kill -0 "$GOST_PID" 2>/dev/null; then
         alive=$(( $(now_ts) - GOST_START_TS ))
@@ -755,7 +748,6 @@ while true; do
         sleep "$backoff"
         start_gost
     fi
-
     if ! kill -0 "$FRPC_PID" 2>/dev/null; then
         alive=$(( $(now_ts) - FRPC_START_TS ))
         [ "$alive" -ge "$STABLE_SECONDS" ] && FRPC_RESTARTS=0
@@ -769,7 +761,6 @@ while true; do
         sleep "$backoff"
         start_frpc
     fi
-
     sleep 2
 done
 EOF
@@ -797,8 +788,8 @@ build_ssh_image() {
     cd "$tmpd"
 
     local frp_line
-    if [ -x /opt/psyduck/bin/frpc ]; then
-        cp /opt/psyduck/bin/frpc .
+    if [ -x "${CONFIG_DIR}/bin/frpc" ]; then
+        cp "${CONFIG_DIR}/bin/frpc" .
         frp_line="COPY frpc /usr/bin/frpc"
     else
         frp_line="RUN apk add --no-cache frp"
@@ -931,22 +922,16 @@ select_deployment_mode() {
     done
     [ ${#online[@]} -eq 0 ] && { log_error "无可用 IPv6 网卡"; exit 1; }
 
-    # 读旧配置（子 shell 隔离解析，避免 eval 引号冲突）
     local old_selected=()
     local old_networks=()
     if [ -f "$CONFIG_FILE" ]; then
         local _sel_str _net_str _l
         _sel_str=$(bash -c 'source "$1" 2>/dev/null; printf "%s\n" "${SELECTED_INTERFACES[@]}"' _ "$CONFIG_FILE" || true)
         _net_str=$(bash -c 'source "$1" 2>/dev/null; printf "%s\n" "${NETWORKS[@]}"' _ "$CONFIG_FILE" || true)
-        while IFS= read -r _l; do
-            [ -n "$_l" ] && old_selected+=("$_l")
-        done <<< "$_sel_str"
-        while IFS= read -r _l; do
-            [ -n "$_l" ] && old_networks+=("$_l")
-        done <<< "$_net_str"
+        while IFS= read -r _l; do [ -n "$_l" ] && old_selected+=("$_l"); done <<< "$_sel_str"
+        while IFS= read -r _l; do [ -n "$_l" ] && old_networks+=("$_l"); done <<< "$_net_str"
     fi
 
-    # 分类
     local keep_ifaces=() failed_ifaces=() new_ifaces=()
     local old cur found
     for old in "${old_selected[@]}"; do
@@ -960,14 +945,11 @@ select_deployment_mode() {
         [ "$found" = false ] && new_ifaces+=("$cur")
     done
 
-    # 删失效
     local iface entry e_iface e_rport
     for iface in "${failed_ifaces[@]}"; do
         for entry in "${old_networks[@]}"; do
-            local e_net e_iface e_rport
             IFS='|' read -r e_net e_iface _ _ e_rport _ _ <<< "$entry"
             if [ "$e_iface" = "$iface" ]; then
-                local c
                 for c in "psyduck${e_rport}" "psyduck${e_rport}-socks5" "psyduck${e_rport}-ssh"; do
                     if docker ps -a --format '{{.Names}}' | grep -qx "$c"; then
                         docker stop "$c" &>/dev/null || true
@@ -984,7 +966,6 @@ select_deployment_mode() {
         done
     done
 
-    # 决定模式
     if [ ${#old_selected[@]} -eq 0 ]; then
         if [ ${#online[@]} -eq 1 ]; then
             DEPLOY_MODE="single"
@@ -995,7 +976,6 @@ select_deployment_mode() {
             read -p "请输入 1 或 2 [默认 1]: " choice < /dev/tty || choice="1"
             if [ "$choice" = "2" ]; then
                 DEPLOY_MODE="multi"
-                local j
                 for j in "${!online[@]}"; do echo " $((j+1))) ${online[$j]}"; done
                 local sel
                 read -p "选择编号（如 1 2 3 或 all）: " sel < /dev/tty || sel="all"
@@ -1003,27 +983,18 @@ select_deployment_mode() {
                     SELECTED_INTERFACES=("${online[@]}")
                 else
                     SELECTED_INTERFACES=()
-                    local n
                     for n in $sel; do
                         [ "$n" -ge 1 ] && [ "$n" -le ${#online[@]} ] && SELECTED_INTERFACES+=("${online[$((n-1))]}")
                     done
                 fi
-            else
-                DEPLOY_MODE="single"
-                SELECTED_INTERFACES=("${online[0]}")
             fi
         fi
     else
         SELECTED_INTERFACES=("${keep_ifaces[@]}" "${new_ifaces[@]}")
-        if [ ${#SELECTED_INTERFACES[@]} -eq 1 ]; then
-            DEPLOY_MODE="single"
-        else
-            DEPLOY_MODE="multi"
-        fi
+        [ ${#SELECTED_INTERFACES[@]} -eq 1 ] && DEPLOY_MODE="single" || DEPLOY_MODE="multi"
     fi
 
     [ ${#SELECTED_INTERFACES[@]} -eq 0 ] && { log_error "无有效网卡"; exit 1; }
-
     OLD_NETWORKS=("${old_networks[@]}")
     log_info "部署模式：$DEPLOY_MODE, 网卡：${SELECTED_INTERFACES[*]}"
 }
@@ -1052,32 +1023,25 @@ configure_ports() {
             REMOTE_PORTS+=("$p")
         fi
     done
-
     SOCKS5_PORTS=()
-    local r
     for r in "${REMOTE_PORTS[@]}"; do SOCKS5_PORTS+=("$((r + 1000))"); done
 }
 
 # ==================== 12. 保存配置 ====================
 detect_and_save_config() {
     mkdir -p "$CONFIG_DIR"
-
-    local net_entries=()
-    local used_names=()
+    local net_entries=() used_names=()
     local idx iface rport sport
     for idx in "${!SELECTED_INTERFACES[@]}"; do
         iface="${SELECTED_INTERFACES[$idx]}"
         rport="${REMOTE_PORTS[$idx]}"
         sport=$((rport + 1000))
-
         local net_name=""
-        local entry
         for entry in "${OLD_NETWORKS[@]}"; do
             local e_net e_iface
             IFS='|' read -r e_net e_iface _ _ _ _ _ <<< "$entry"
             if [ "$e_iface" = "$iface" ]; then net_name="$e_net"; break; fi
         done
-
         if [ -z "$net_name" ]; then
             local n=0 candidate
             while true; do
@@ -1085,27 +1049,17 @@ detect_and_save_config() {
                 [ "$n" -gt 0 ] && candidate="psyduck${n}"
                 local taken=false
                 docker network ls --format '{{.Name}}' | grep -qx "$candidate" && taken=true
-                local un
-                for un in "${used_names[@]}"; do
-                    [ "$un" = "$candidate" ] && taken=true
-                done
-                if [ "$taken" = false ]; then net_name="$candidate"; break; fi
+                for un in "${used_names[@]}"; do [ "$un" = "$candidate" ] && taken=true; done
+                [ "$taken" = false ] && { net_name="$candidate"; break; }
                 n=$((n + 1))
             done
         fi
         used_names+=("$net_name")
-
-        local info
+        local info subnet gw
         info=$(get_iface_info "$iface")
-        local subnet gw
         IFS='|' read -r _ subnet gw <<< "$info"
-
         local ipv6_prefix="$IPV6_PREFIX_BASE"
-        if [ "$idx" -gt 0 ]; then
-            local prefix_hex
-            prefix_hex=$(printf "%x" $((0x${IPV6_PREFIX_BASE:3} + idx)))
-            ipv6_prefix="${IPV6_PREFIX_BASE:0:3}${prefix_hex}"
-        fi
+        [ "$idx" -gt 0 ] && { local prefix_hex; prefix_hex=$(printf "%x" $((0x${IPV6_PREFIX_BASE:3} + idx))); ipv6_prefix="${IPV6_PREFIX_BASE:0:3}${prefix_hex}"; }
         net_entries+=("$net_name|$iface|$subnet|$gw|$rport|$sport|$ipv6_prefix")
     done
 
@@ -1115,7 +1069,6 @@ detect_and_save_config() {
         echo "REMOTE_PORTS=(${REMOTE_PORTS[*]})"
         echo "SOCKS5_PORTS=(${SOCKS5_PORTS[*]})"
         printf 'NETWORKS=('
-        local i
         for i in "${!net_entries[@]}"; do
             [ "$i" -gt 0 ] && printf ' '
             printf '"%s"' "${net_entries[$i]}"
@@ -1133,16 +1086,8 @@ create_macvlan_network() {
         log_info "网络 $net_name 已存在，跳过创建"
         return 0
     fi
-    if [[ "$ipv6_prefix" =~ : ]]; then
-        ipv6_prefix=$(echo "$ipv6_prefix" | cut -d':' -f1-2 | tr -d ':')
-    fi
-    docker network create -d macvlan \
-        --subnet="$subnet" \
-        --gateway="$gw" \
-        --ipv6 \
-        --subnet="${ipv6_prefix}:5a35:6fce::/64" \
-        -o parent="$iface" \
-        "$net_name"
+    [[ "$ipv6_prefix" =~ : ]] && ipv6_prefix=$(echo "$ipv6_prefix" | cut -d':' -f1-2 | tr -d ':')
+    docker network create -d macvlan --subnet="$subnet" --gateway="$gw" --ipv6 --subnet="${ipv6_prefix}:5a35:6fce::/64" -o parent="$iface" "$net_name"
     log_success "创建网络 $net_name"
 }
 
@@ -1150,13 +1095,12 @@ create_macvlan_network() {
 deploy_main_container() {
     local net_name=$1 remote_port=$2
     local container_name="psyduck${remote_port}"
-
     if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
         log_info "主容器 $container_name 已存在"
         return
     fi
-
-    local tmp="/tmp/frpc_${remote_port}.ini"
+    local tmp="${CONFIG_DIR}/frpc_${remote_port}.ini"
+    rm -rf "$tmp"
     cat > "$tmp" <<EOF
 [common]
 server_addr = ${DEFAULT_SERVER_ADDR}
@@ -1170,13 +1114,7 @@ local_ip = 127.0.0.1
 local_port = 24678
 remote_port = ${remote_port}
 EOF
-
-    docker run -d --name "$container_name" \
-        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
-        --restart unless-stopped \
-        --network "$net_name" \
-        -v "$tmp:/root/frpc.ini" \
-        psyduck
+    docker run -d --name "$container_name" --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} --restart unless-stopped --network "$net_name" -v "$tmp:/root/frpc.ini" psyduck
     log_success "主容器 $container_name 已启动"
 }
 
@@ -1184,15 +1122,12 @@ EOF
 deploy_socks5_container() {
     local net_name=$1 rport=$2 sport=$3
     local container_name="psyduck${rport}-socks5"
-
     if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
         log_info "SOCKS5 容器 $container_name 已存在"
         return
     fi
-
-    local workdir="/opt/psyduck/socks5_${rport}"
+    local workdir="${CONFIG_DIR}/socks5_${rport}"
     rm -rf "$workdir" && mkdir -p "$workdir"
-
     cat > "$workdir/frpc.ini" <<EOF
 [common]
 server_addr = ${DEFAULT_SERVER_ADDR}
@@ -1206,15 +1141,7 @@ local_ip = 127.0.0.1
 local_port = 2233
 remote_port = ${sport}
 EOF
-
-    docker run -d --name "$container_name" \
-        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
-        --restart unless-stopped \
-        --network "$net_name" \
-        -v "$workdir/frpc.ini:/app/frpc.ini" \
-        -e SOCKS5_USER="${SOCKS5_USER}" \
-        -e SOCKS5_PASS="${SOCKS5_PASS}" \
-        psyduck-socks5
+    docker run -d --name "$container_name" --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} --restart unless-stopped --network "$net_name" -v "$workdir/frpc.ini:/app/frpc.ini" -e SOCKS5_USER="${SOCKS5_USER}" -e SOCKS5_PASS="${SOCKS5_PASS}" psyduck-socks5
     log_success "SOCKS5 容器 $container_name 已启动"
 }
 
@@ -1223,15 +1150,12 @@ deploy_ssh_container() {
     local rport=$1
     local ssh_rport=$((rport + 2000))
     local container_name="psyduck${rport}-ssh"
-
     if docker ps -a --format '{{.Names}}' | grep -qx "$container_name"; then
         log_info "SSH 容器 $container_name 已存在"
         return
     fi
-
-    local workdir="/opt/psyduck/ssh_${rport}"
+    local workdir="${CONFIG_DIR}/ssh_${rport}"
     rm -rf "$workdir" && mkdir -p "$workdir"
-
     cat > "$workdir/frpc.ini" <<EOF
 [common]
 server_addr = ${DEFAULT_SERVER_ADDR}
@@ -1245,13 +1169,7 @@ local_ip = 127.0.0.1
 local_port = 22
 remote_port = ${ssh_rport}
 EOF
-
-    docker run -d --name "$container_name" \
-        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
-        --restart unless-stopped \
-        --network host \
-        -v "$workdir/frpc.ini:/app/frpc.ini" \
-        psyduck-ssh
+    docker run -d --name "$container_name" --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} --restart unless-stopped --network host -v "$workdir/frpc.ini:/app/frpc.ini" psyduck-ssh
     log_success "SSH 容器 $container_name 已启动（端口 $ssh_rport）"
 }
 
@@ -1260,9 +1178,7 @@ generate_maintenance_script() {
     cat > "$SCRIPT_PATH" <<'EOF'
 #!/bin/bash
 source /opt/psyduck/psyduck.conf
-
-for c in $(docker ps -a --format '{{.Names}}' \
-    | grep -E '^psyduck[0-9]+$|^psyduck[0-9]+-socks5$'); do
+for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$|^psyduck[0-9]+-socks5$'); do
     if docker restart "$c" &>/dev/null; then
         echo "[$(date '+%F %T')] 已重启 $c"
     else
@@ -1281,28 +1197,22 @@ setup_systemd_timer() {
 Description=Psyduck Maintenance
 After=docker.service
 Requires=docker.service
-
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/psyduck_maintenance.sh
 TimeoutStartSec=600
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
     cat > /etc/systemd/system/psyduck-maintenance.timer <<'EOF'
 [Unit]
 Description=Psyduck Daily Maintenance
-
 [Timer]
 OnCalendar=*-*-* 04:00:00
 Persistent=true
-
 [Install]
 WantedBy=timers.target
 EOF
-
     systemctl daemon-reload
     systemctl enable --now psyduck-maintenance.timer
     log_success "systemd 定时器已设置（每天 04:00）"
@@ -1311,29 +1221,21 @@ EOF
 # ==================== 19. 验证主容器 ====================
 verify_main_containers() {
     log_step "验证主容器是否可用..."
-    local main_containers
-    main_containers=$(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$' || true)
-
-    local c
+    local main_containers=$(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$' || true)
     for c in $main_containers; do
-        local ok=false i
+        local ok=false
         for i in 1 2 3; do
             if docker exec "$c" curl -fsS --max-time 5 "http://127.0.0.1:24678/ipv6" &>/dev/null; then
                 ok=true; break
             fi
             sleep 3
         done
-        if [ "$ok" = true ]; then
-            log_success "容器 $c 验证通过"
-        else
-            log_warning "容器 $c 验证失败"
-        fi
+        [ "$ok" = true ] && log_success "容器 $c 验证通过" || log_warning "容器 $c 验证失败"
     done
 }
 
 # ==================== 主流程 ====================
 main() {
-    local arg
     for arg in "$@"; do
         case "$arg" in
             --debug) DEBUG_MODE=true ;;
@@ -1341,26 +1243,16 @@ main() {
         esac
     done
 
-    if [ "$CHECK_MODE" = true ]; then
-        log_info "检查模式暂未实现，仅提示"
-        exit 0
-    fi
-
-    if [ "$DEBUG_MODE" = true ]; then
-        log_warning "调试模式：删除除 SSH 外的所有容器与网络"
-        clean_all_containers true
-    fi
+    [ "$CHECK_MODE" = true ] && { log_info "检查模式暂未实现"; exit 0; }
+    [ "$DEBUG_MODE" = true ] && { log_warning "调试模式：删除除 SSH 外的所有容器与网络"; clean_all_containers true; }
 
     log_step "开始完整部署"
-    
-    # ========== 新增：FRP 配置输入 ==========
     prompt_frp_config
     if ! validate_frp_config; then
         log_error "FRP 配置验证失败，退出部署"
         exit 1
     fi
-    # =======================================
-    
+
     check_and_set_mirrors
     install_docker
     check_docker_mirror
@@ -1370,46 +1262,30 @@ main() {
     local need_build=false
     socks5_image_ok || need_build=true
     ssh_image_ok || need_build=true
-    if [ "$need_build" = true ]; then
-        test_alpine_mirrors
-    else
-        log_info "SOCKS5 和 SSH 镜像均已存在且版本匹配，跳过 Alpine 源测速"
-    fi
+    [ "$need_build" = true ] && test_alpine_mirrors || log_info "SOCKS5 和 SSH 镜像均已存在且版本匹配，跳过 Alpine 源测速"
     build_socks5_image
     build_ssh_image
 
-    if ! check_config_drift; then
-        log_info "已清除旧容器与网络，将使用已有端口重新部署"
-    fi
-
+    check_config_drift || log_info "已清除旧容器与网络，将使用已有端口重新部署"
     select_deployment_mode
     configure_ports
     detect_and_save_config
     source "$CONFIG_FILE"
 
-    local entry
     for entry in "${NETWORKS[@]}"; do
-        local net_name iface subnet gw rport sport ipv6_prefix
         IFS='|' read -r net_name iface subnet gw rport sport ipv6_prefix <<< "$entry"
         create_macvlan_network "$net_name" "$iface" "$subnet" "$gw" "$ipv6_prefix"
         deploy_main_container "$net_name" "$rport"
         deploy_socks5_container "$net_name" "$rport" "$sport"
     done
-
     for entry in "${NETWORKS[@]}"; do
-        local net_name iface subnet gw rport sport ipv6_prefix
         IFS='|' read -r net_name iface subnet gw rport sport ipv6_prefix <<< "$entry"
         deploy_ssh_container "$rport"
     done
 
     log_step "重启所有非 SSH 容器以确保配置生效..."
-    local c
     for c in $(docker ps -a --format '{{.Names}}' | grep -E '^psyduck[0-9]+$|^psyduck[0-9]+-socks5$' || true); do
-        if docker restart "$c" &>/dev/null; then
-            log_info "已重启 $c"
-        else
-            log_warning "重启 $c 失败"
-        fi
+        docker restart "$c" &>/dev/null && log_info "已重启 $c" || log_warning "重启 $c 失败"
     done
 
     generate_maintenance_script
