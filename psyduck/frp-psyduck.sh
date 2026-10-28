@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================
 # Psyduck 全自动部署脚本（重构版）
-# 版本：10.6
+# 版本：10.7-Interactive
+# 优化：FRP 服务器地址交互式输入 + DNS 配置
 # ============================================
 set -euo pipefail
 
@@ -18,9 +19,12 @@ DEPLOY_FLAG="/opt/psyduck/.deployed"
 CONFIG_DIR="/opt/psyduck"
 CONFIG_FILE="${CONFIG_DIR}/psyduck.conf"
 SCRIPT_PATH="/usr/local/bin/psyduck_maintenance.sh"
-DEFAULT_SERVER_ADDR="nezha.sggg3326.top"
-DEFAULT_SERVER_PORT=7000
-DEFAULT_TOKEN="a1391959853-a1391959853"
+
+# FRP 服务器配置（运行时输入或从配置文件读取）
+DEFAULT_SERVER_ADDR=""
+DEFAULT_SERVER_PORT=""
+DEFAULT_TOKEN=""
+
 DEBUG_MODE=false
 CHECK_MODE=false
 BINARY_PATTERN=""
@@ -33,6 +37,10 @@ SOCKS5_USER="xiaoz"
 SOCKS5_PASS="a1391959853"
 FRP_VERSION="0.70.1"
 GOST_VERSION="3.2.6"
+
+# DNS 服务器配置（解决容器 DNS 解析失败问题）
+DNS_SERVER_1="${PSYDUCK_DNS_1:-223.5.5.5}"
+DNS_SERVER_2="${PSYDUCK_DNS_2:-8.8.8.8}"
 
 DEPLOY_MODE=""
 SELECTED_INTERFACES=()
@@ -53,7 +61,7 @@ detect_arch() {
         i386|i686) BINARY_PATTERN="*i386*|*386*" ;;
         *) log_error "不支持架构 $arch"; exit 1 ;;
     esac
-    log_info "系统架构: $arch"
+    log_info "系统架构：$arch"
 }
 
 get_physical_ifaces() {
@@ -93,6 +101,77 @@ check_iface_ipv6() {
         esac
     done
     return 1
+}
+
+# ==================== FRP 配置输入 ====================
+prompt_frp_config() {
+    local old_addr="" old_port="" old_token=""
+    
+    # 尝试从旧配置文件读取
+    if [ -f "$CONFIG_FILE" ]; then
+        old_addr=$(grep '^SNAPSHOT_DEFAULT_SERVER_ADDR=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true)
+        old_port=$(grep '^SNAPSHOT_DEFAULT_SERVER_PORT=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true)
+        old_token=$(grep '^SNAPSHOT_DEFAULT_TOKEN=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- || true)
+    fi
+    
+    echo -e "${CYAN}============================================${NC}"
+    echo -e "${CYAN}       FRP 服务器配置                     ${NC}"
+    echo -e "${CYAN}============================================${NC}"
+    
+    # 服务器地址
+    local default_addr="${old_addr:-nezha.sggg3326.top}"
+    read -p "FRP 服务器地址 [默认：$default_addr]: " server_addr < /dev/tty || server_addr=""
+    DEFAULT_SERVER_ADDR="${server_addr:-$default_addr}"
+    log_info "FRP 服务器地址：$DEFAULT_SERVER_ADDR"
+    
+    # 服务器端口
+    local default_port="${old_port:-7000}"
+    read -p "FRP 服务器端口 [默认：$default_port]: " server_port < /dev/tty || server_port=""
+    DEFAULT_SERVER_PORT="${server_port:-$default_port}"
+    log_info "FRP 服务器端口：$DEFAULT_SERVER_PORT"
+    
+    # Token
+    local default_token="${old_token:-a1391959853-a1391959853}"
+    read -p "FRP Token [默认：$default_token]: " token < /dev/tty || token=""
+    DEFAULT_TOKEN="${token:-$default_token}"
+    log_info "FRP Token：${DEFAULT_TOKEN:0:3}***${DEFAULT_TOKEN: -3}"
+    
+    echo -e "${CYAN}============================================${NC}"
+}
+
+validate_frp_config() {
+    # 验证服务器地址格式
+    if [[ ! "$DEFAULT_SERVER_ADDR" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        log_error "无效的服务器地址格式：$DEFAULT_SERVER_ADDR"
+        return 1
+    fi
+    
+    # 验证端口范围
+    if [[ ! "$DEFAULT_SERVER_PORT" =~ ^[0-9]+$ ]] || [ "$DEFAULT_SERVER_PORT" -lt 1 ] || [ "$DEFAULT_SERVER_PORT" -gt 65535 ]; then
+        log_error "无效的端口号：$DEFAULT_SERVER_PORT"
+        return 1
+    fi
+    
+    # 验证 Token 非空
+    if [ -z "$DEFAULT_TOKEN" ]; then
+        log_error "Token 不能为空"
+        return 1
+    fi
+    
+    # 测试连通性（可选）
+    log_info "测试 FRP 服务器连通性..."
+    if command -v curl &>/dev/null; then
+        if ! timeout 5 bash -c "echo > /dev/tcp/$DEFAULT_SERVER_ADDR/$DEFAULT_SERVER_PORT" 2>/dev/null; then
+            log_warning "无法连接到 FRP 服务器 ${DEFAULT_SERVER_ADDR}:${DEFAULT_SERVER_PORT}"
+            log_warning "请确认服务器地址和端口正确，或服务器防火墙已放行"
+            read -p "是否继续部署？[y/N]: " confirm < /dev/tty || confirm="n"
+            [ "$confirm" != "y" ] && [ "$confirm" != "Y" ] && return 1
+        else
+            log_success "FRP 服务器连通性测试通过"
+        fi
+    fi
+    
+    return 0
 }
 
 # ==================== 镜像版本检查 ====================
@@ -145,7 +224,7 @@ check_and_set_mirrors() {
     local info distro_id distro_codename
     info=$(get_distro_info)
     IFS='|' read -r distro_id distro_codename <<< "$info"
-    log_info "发行版: $distro_id, 代号: $distro_codename"
+    log_info "发行版：$distro_id, 代号：$distro_codename"
 
     local china_mirrors="mirrors.(aliyun|tencent|tuna|ustc|163)"
     if grep -qE "$china_mirrors" /etc/apt/sources.list 2>/dev/null || \
@@ -178,7 +257,7 @@ deb http://security.ubuntu.com/ubuntu $distro_codename-security main restricted 
         *)
             new_sources="deb http://$mirror/debian bookworm main contrib non-free
 deb http://$mirror/debian bookworm-updates main contrib non-free
-deb http://security.debian.org/debian-security bookworm-security main contrib non-free"
+deb http://security.debian.org/debian-security bookworm-cert main contrib non-free"
             ;;
     esac
 
@@ -199,7 +278,7 @@ install_docker() {
     log_step "检查并安装 Docker..."
 
     if command -v docker &>/dev/null; then
-        log_info "检测到 Docker 已安装: $(docker --version 2>/dev/null || echo '版本未知')"
+        log_info "检测到 Docker 已安装：$(docker --version 2>/dev/null || echo '版本未知')"
         if docker info &>/dev/null; then
             log_success "Docker 守护进程运行正常"
             return 0
@@ -244,7 +323,7 @@ install_docker() {
         log_error "Docker 安装后无法通信"
         exit 1
     fi
-    log_success "Docker 安装完成: $(docker --version 2>/dev/null || echo '版本未知')"
+    log_success "Docker 安装完成：$(docker --version 2>/dev/null || echo '版本未知')"
 }
 
 # ==================== 3. Docker 镜像加速 ====================
@@ -349,7 +428,7 @@ PY
 # ==================== 4. 安装 Git ====================
 install_git() {
     if command -v git &>/dev/null; then
-        log_success "Git 已安装: $(git --version)"
+        log_success "Git 已安装：$(git --version)"
         return 0
     fi
     log_info "安装 Git..."
@@ -358,7 +437,7 @@ install_git() {
         log_error "Git 安装失败"
         exit 1
     fi
-    log_success "Git 安装完成: $(git --version)"
+    log_success "Git 安装完成：$(git --version)"
 }
 
 # ==================== 5. 克隆仓库 ====================
@@ -369,7 +448,7 @@ normalize_origin_url() {
     [[ "$url" =~ ^https://github\.com/ ]] && return 0
     if [[ "$url" == *"https://github.com/"* ]]; then
         local clean="https://github.com/${url##*https://github.com/}"
-        log_info "origin 含代理前缀，重置为: $clean"
+        log_info "origin 含代理前缀，重置为：$clean"
         git remote set-url origin "$clean"
     fi
     return 0
@@ -392,7 +471,7 @@ clone_and_build_main() {
         fi
         cd ..
     else
-        log_info "克隆仓库（3分钟超时）..."
+        log_info "克隆仓库（3 分钟超时）..."
         if ! timeout 180 git $proxy_flag clone "$repo" relayApi; then
             log_warning "代理克隆失败，尝试直连..."
             timeout 180 git clone "$repo" relayApi || { log_error "克隆失败"; exit 1; }
@@ -462,7 +541,7 @@ test_alpine_mirrors() {
         if [ "$speed_int" -gt 0 ]; then
             local speed_kbs
             speed_kbs=$(awk "BEGIN {printf \"%.2f\", $speed/1024}")
-            log_info "  速度: ${speed_kbs} KB/s"
+            log_info "  速度：${speed_kbs} KB/s"
             if [ "$speed_int" -gt "$best_speed" ]; then
                 best_speed=$speed_int
                 best_mirror=$mirror
@@ -477,7 +556,7 @@ test_alpine_mirrors() {
     if [ "$best_speed" -eq 0 ]; then
         log_warning "所有镜像测速失败，使用默认源 $FASTEST_ALPINE_MIRROR"
     else
-        log_success "选择最快的 Alpine 镜像源: $FASTEST_ALPINE_MIRROR"
+        log_success "选择最快的 Alpine 镜像源：$FASTEST_ALPINE_MIRROR"
     fi
     return 0
 }
@@ -504,7 +583,7 @@ build_socks5_image() {
         x86_64)          frp_arch="amd64"; gost_arch="amd64" ;;
         aarch64|arm64)   frp_arch="arm64"; gost_arch="arm64" ;;
         armv7l|armv8l)   frp_arch="arm";   gost_arch="armv7" ;;
-        *) log_error "不支持的架构: $arch"; exit 1 ;;
+        *) log_error "不支持的架构：$arch"; exit 1 ;;
     esac
 
     local LOCAL_BIN_DIR="/opt/psyduck/bin"
@@ -789,6 +868,8 @@ SNAPSHOT_SOCKS5_PASS=$SOCKS5_PASS
 SNAPSHOT_FRP_VERSION=$FRP_VERSION
 SNAPSHOT_GOST_VERSION=$GOST_VERSION
 SNAPSHOT_GITHUB_PROXY_PREFIX=$GITHUB_PROXY_PREFIX
+SNAPSHOT_DNS_SERVER_1=$DNS_SERVER_1
+SNAPSHOT_DNS_SERVER_2=$DNS_SERVER_2
 EOF
 }
 
@@ -796,7 +877,7 @@ check_config_drift() {
     [ -f "$CONFIG_FILE" ] || return 0
 
     local snap_addr snap_port snap_token snap_user snap_pass
-    local snap_frp snap_gost snap_proxy
+    local snap_frp snap_gost snap_proxy snap_dns1 snap_dns2
     snap_addr=$(grep '^SNAPSHOT_DEFAULT_SERVER_ADDR=' "$CONFIG_FILE" | cut -d= -f2- || true)
     snap_port=$(grep '^SNAPSHOT_DEFAULT_SERVER_PORT=' "$CONFIG_FILE" | cut -d= -f2- || true)
     snap_token=$(grep '^SNAPSHOT_DEFAULT_TOKEN=' "$CONFIG_FILE" | cut -d= -f2- || true)
@@ -805,6 +886,8 @@ check_config_drift() {
     snap_frp=$(grep '^SNAPSHOT_FRP_VERSION=' "$CONFIG_FILE" | cut -d= -f2- || true)
     snap_gost=$(grep '^SNAPSHOT_GOST_VERSION=' "$CONFIG_FILE" | cut -d= -f2- || true)
     snap_proxy=$(grep '^SNAPSHOT_GITHUB_PROXY_PREFIX=' "$CONFIG_FILE" | cut -d= -f2- || true)
+    snap_dns1=$(grep '^SNAPSHOT_DNS_SERVER_1=' "$CONFIG_FILE" | cut -d= -f2- || true)
+    snap_dns2=$(grep '^SNAPSHOT_DNS_SERVER_2=' "$CONFIG_FILE" | cut -d= -f2- || true)
 
     local drift=false
     [ "$snap_addr" != "$DEFAULT_SERVER_ADDR" ] && drift=true
@@ -815,6 +898,8 @@ check_config_drift() {
     [ "$snap_frp" != "$FRP_VERSION" ] && drift=true
     [ "$snap_gost" != "$GOST_VERSION" ] && drift=true
     [ "$snap_proxy" != "$GITHUB_PROXY_PREFIX" ] && drift=true
+    [ "$snap_dns1" != "$DNS_SERVER_1" ] && drift=true
+    [ "$snap_dns2" != "$DNS_SERVER_2" ] && drift=true
 
     if [ "$drift" = false ]; then
         log_success "脚本变量与快照一致"
@@ -876,7 +961,7 @@ select_deployment_mode() {
     done
 
     # 删失效
-    local iface entry
+    local iface entry e_iface e_rport
     for iface in "${failed_ifaces[@]}"; do
         for entry in "${old_networks[@]}"; do
             local e_net e_iface e_rport
@@ -907,7 +992,7 @@ select_deployment_mode() {
         else
             echo -e "${CYAN}检测到多个可用 IPv6 网卡，请选择：\n 1) 单网口\n 2) 多网口${NC}"
             local choice
-            read -p "请输入 1 或 2 [默认1]: " choice < /dev/tty || choice="1"
+            read -p "请输入 1 或 2 [默认 1]: " choice < /dev/tty || choice="1"
             if [ "$choice" = "2" ]; then
                 DEPLOY_MODE="multi"
                 local j
@@ -940,7 +1025,7 @@ select_deployment_mode() {
     [ ${#SELECTED_INTERFACES[@]} -eq 0 ] && { log_error "无有效网卡"; exit 1; }
 
     OLD_NETWORKS=("${old_networks[@]}")
-    log_info "部署模式: $DEPLOY_MODE, 网卡: ${SELECTED_INTERFACES[*]}"
+    log_info "部署模式：$DEPLOY_MODE, 网卡：${SELECTED_INTERFACES[*]}"
 }
 
 # ==================== 11. 端口配置 ====================
@@ -960,7 +1045,7 @@ configure_ports() {
             echo -e "${CYAN}为网卡 $iface 设置主容器端口:${NC}"
             local p
             while true; do
-                read -p "主容器端口: " p < /dev/tty || { log_error "读取输入失败"; exit 1; }
+                read -p "主容器端口：" p < /dev/tty || { log_error "读取输入失败"; exit 1; }
                 if [ -n "$p" ]; then break; fi
                 log_warning "端口不能为空，请重新输入"
             done
@@ -1087,6 +1172,7 @@ remote_port = ${remote_port}
 EOF
 
     docker run -d --name "$container_name" \
+        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
         --restart unless-stopped \
         --network "$net_name" \
         -v "$tmp:/root/frpc.ini" \
@@ -1122,6 +1208,7 @@ remote_port = ${sport}
 EOF
 
     docker run -d --name "$container_name" \
+        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
         --restart unless-stopped \
         --network "$net_name" \
         -v "$workdir/frpc.ini:/app/frpc.ini" \
@@ -1160,6 +1247,7 @@ remote_port = ${ssh_rport}
 EOF
 
     docker run -d --name "$container_name" \
+        --dns ${DNS_SERVER_1} --dns ${DNS_SERVER_2} \
         --restart unless-stopped \
         --network host \
         -v "$workdir/frpc.ini:/app/frpc.ini" \
@@ -1183,7 +1271,7 @@ for c in $(docker ps -a --format '{{.Names}}' \
 done
 EOF
     chmod +x "$SCRIPT_PATH"
-    log_success "维护脚本已生成: $SCRIPT_PATH"
+    log_success "维护脚本已生成：$SCRIPT_PATH"
 }
 
 # ==================== 18. systemd 定时器 ====================
@@ -1264,6 +1352,15 @@ main() {
     fi
 
     log_step "开始完整部署"
+    
+    # ========== 新增：FRP 配置输入 ==========
+    prompt_frp_config
+    if ! validate_frp_config; then
+        log_error "FRP 配置验证失败，退出部署"
+        exit 1
+    fi
+    # =======================================
+    
     check_and_set_mirrors
     install_docker
     check_docker_mirror
